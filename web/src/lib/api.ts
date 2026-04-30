@@ -3,6 +3,7 @@ import { httpRequest, request } from "@/lib/request";
 export type AccountType = string;
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
 export type ImageModel = "gpt-image-2" | "codex-gpt-image-2";
+export type GptWebMessageRole = "user" | "assistant" | "system";
 export type AuthRole = "admin" | "user";
 
 export type Account = {
@@ -176,6 +177,24 @@ export type ImageTask = {
   updated_at: string;
   data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
   error?: string;
+};
+
+export type GptWebChatMessage = {
+  role: GptWebMessageRole;
+  content: string;
+};
+
+export type GptWebChatCompletionResponse = {
+  id?: string;
+  model?: string;
+  choices?: Array<{
+    index?: number;
+    message?: {
+      role?: GptWebMessageRole;
+      content?: string;
+    };
+    finish_reason?: string | null;
+  }>;
 };
 
 type ImageTaskListResponse = {
@@ -379,6 +398,17 @@ export async function fetchImageTasks(ids: string[]) {
     params.set("ids", ids.join(","));
   }
   return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`);
+}
+
+export async function createGptWebChatCompletion(messages: GptWebChatMessage[]) {
+  return httpRequest<GptWebChatCompletionResponse>("/v1/chat/completions", {
+    method: "POST",
+    body: {
+      model: "gpt-web",
+      messages,
+      stream: false,
+    },
+  });
 }
 
 export async function fetchSettingsConfig() {
