@@ -14,12 +14,13 @@ from services.protocol.conversation import (
     count_message_tokens,
     count_text_tokens,
     encode_images,
+    gpt_web_text_backend,
     normalize_messages,
     stream_image_outputs_with_pool,
     stream_text_deltas,
     text_backend,
 )
-from utils.helper import build_chat_image_markdown_content, extract_chat_image, extract_chat_prompt, is_image_chat_request, parse_image_count
+from utils.helper import GPT_WEB_MODEL, build_chat_image_markdown_content, extract_chat_image, extract_chat_prompt, is_image_chat_request, parse_image_count
 
 
 def completion_chunk(model: str, delta: dict[str, Any], finish_reason: str | None = None, completion_id: str = "", created: int | None = None) -> dict[str, Any]:
@@ -176,9 +177,11 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         if is_image_chat_request(body):
             return image_chat_events(body)
         model, messages = text_chat_parts(body)
-        return stream_text_chat_completion(text_backend(), messages, model)
+        backend = gpt_web_text_backend() if model == GPT_WEB_MODEL else text_backend()
+        return stream_text_chat_completion(backend, messages, model)
     if is_image_chat_request(body):
         return image_chat_response(body)
     model, messages = text_chat_parts(body)
     request = ConversationRequest(model=model, messages=messages)
-    return completion_response(model, collect_text(text_backend(), request), messages=messages)
+    backend = gpt_web_text_backend() if model == GPT_WEB_MODEL else text_backend()
+    return completion_response(model, collect_text(backend, request), messages=messages)

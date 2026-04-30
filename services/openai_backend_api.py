@@ -52,16 +52,18 @@ class OpenAIBackendAPI:
     - 协议兼容转换放在 `services.protocol`
     """
 
-    def __init__(self, access_token: str = "") -> None:
+    def __init__(self, access_token: str = "", route_mode: str = "") -> None:
         """初始化后端客户端。
 
         参数：
         - `access_token`：可选。传入后表示使用已登录链路；不传则使用未登录链路。
+        - `route_mode`：可选。用于启用特定模型路由的专用请求体细节。
         """
         self.base_url = "https://chatgpt.com"
         self.client_version = DEFAULT_CLIENT_VERSION
         self.client_build_number = DEFAULT_CLIENT_BUILD_NUMBER
         self.access_token = access_token
+        self.route_mode = str(route_mode or "").strip()
         self.fp = self._build_fp()
         self.user_agent = self.fp["user-agent"]
         self.device_id = self.fp["oai-device-id"]
@@ -361,7 +363,7 @@ class OpenAIBackendAPI:
 
     def _conversation_payload(self, messages: list[Dict[str, Any]], model: str, timezone: str) -> Dict[str, Any]:
         """把标准 messages 构造成 web 对话请求体。"""
-        return {
+        payload = {
             "action": "next",
             "messages": self._api_messages_to_conversation_messages(messages),
             "model": model,
@@ -391,6 +393,10 @@ class OpenAIBackendAPI:
                 "screen_width": 2560,
             },
         }
+        if self.route_mode == "gpt-web":
+            payload["model"] = "auto"
+            payload["force_parallel_switch"] = "auto"
+        return payload
 
     def _image_model_slug(self, model: str) -> str:
         """把标准图片模型名映射到底层 model slug。"""

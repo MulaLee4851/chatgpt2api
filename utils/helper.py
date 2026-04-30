@@ -12,6 +12,8 @@ from fastapi import HTTPException
 from utils.log import logger
 
 IMAGE_MODELS = {"gpt-image-2", "codex-gpt-image-2"}
+GPT_WEB_MODEL = "gpt-web"
+LOCAL_EXTRA_MODELS = IMAGE_MODELS | {GPT_WEB_MODEL}
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
 

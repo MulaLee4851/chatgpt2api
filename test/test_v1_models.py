@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 import requests
 
@@ -18,6 +19,16 @@ class ModelListTests(unittest.TestCase):
         result = openai_v1_models.list_models()
         print("function result:")
         print(json.dumps(result, ensure_ascii=False, indent=2))
+
+    def test_list_models_includes_gpt_web(self):
+        fake_result = {"object": "list", "data": [{"id": "auto", "object": "model"}]}
+        with mock.patch.object(openai_v1_models.OpenAIBackendAPI, "list_models", return_value=fake_result):
+            result = openai_v1_models.list_models()
+        ids = {str(item.get("id") or "") for item in result.get("data") or [] if isinstance(item, dict)}
+        self.assertIn("gpt-web", ids)
+        self.assertIn("gpt-image-2", ids)
+        self.assertIn("codex-gpt-image-2", ids)
+        self.assertIn("auto", ids)
 
     def test_list_models_http(self):
         """测试通过 HTTP 接口获取模型列表。"""

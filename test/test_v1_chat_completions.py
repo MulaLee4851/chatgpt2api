@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import time
 import unittest
+from unittest import mock
 
 import requests
 
+from services.protocol import openai_v1_chat_complete
 from utils.helper import save_images_from_text
 
 AUTH_KEY = "chatgpt2api"
@@ -13,6 +15,44 @@ BASE_URL = "http://localhost:8000"
 
 
 class ChatCompletionsTests(unittest.TestCase):
+    def test_gpt_web_stream_uses_dedicated_backend(self):
+        body = {
+            "model": "gpt-web",
+            "stream": True,
+            "messages": [{"role": "user", "content": "你好。"}],
+        }
+        backend = object()
+        with (
+            mock.patch.object(openai_v1_chat_complete, "is_image_chat_request", return_value=False),
+            mock.patch.object(openai_v1_chat_complete, "gpt_web_text_backend", return_value=backend) as gpt_backend_mock,
+            mock.patch.object(openai_v1_chat_complete, "text_backend") as text_backend_mock,
+            mock.patch.object(openai_v1_chat_complete, "stream_text_chat_completion", return_value=iter(())) as stream_mock,
+        ):
+            result = openai_v1_chat_complete.handle(body)
+        self.assertIsInstance(result, type(iter(())))
+        gpt_backend_mock.assert_called_once_with()
+        text_backend_mock.assert_not_called()
+        stream_mock.assert_called_once_with(backend, [{"role": "user", "content": "你好。"}], "gpt-web")
+
+    def test_auto_non_stream_keeps_default_backend(self):
+        body = {
+            "model": "auto",
+            "messages": [{"role": "user", "content": "你好。"}],
+        }
+        backend = object()
+        with (
+            mock.patch.object(openai_v1_chat_complete, "is_image_chat_request", return_value=False),
+            mock.patch.object(openai_v1_chat_complete, "text_backend", return_value=backend) as text_backend_mock,
+            mock.patch.object(openai_v1_chat_complete, "gpt_web_text_backend") as gpt_backend_mock,
+            mock.patch.object(openai_v1_chat_complete, "collect_text", return_value="ok") as collect_mock,
+        ):
+            result = openai_v1_chat_complete.handle(body)
+        gpt_backend_mock.assert_not_called()
+        text_backend_mock.assert_called_once_with()
+        collect_mock.assert_called_once_with(backend, mock.ANY)
+        self.assertEqual(result["model"], "auto")
+        self.assertEqual(result["choices"][0]["message"]["content"], "ok")
+
     def test_text_completion_http(self):
         """测试文本对话的非流式 HTTP 调用。"""
         response = requests.post(

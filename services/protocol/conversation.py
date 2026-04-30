@@ -14,7 +14,7 @@ import tiktoken
 from services.account_service import account_service
 from services.config import config
 from services.openai_backend_api import OpenAIBackendAPI
-from utils.helper import IMAGE_MODELS, extract_image_from_message_content
+from utils.helper import GPT_WEB_MODEL, IMAGE_MODELS, extract_image_from_message_content
 from utils.log import logger
 
 
@@ -476,6 +476,10 @@ def conversation_events(
 
 def text_backend() -> OpenAIBackendAPI:
     return OpenAIBackendAPI(access_token=account_service.get_text_access_token())
+
+
+def gpt_web_text_backend() -> OpenAIBackendAPI:
+    return OpenAIBackendAPI(access_token=account_service.get_text_access_token(), route_mode=GPT_WEB_MODEL)
 
 
 def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[str]:
