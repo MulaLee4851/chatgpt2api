@@ -184,6 +184,20 @@ export type GptWebChatMessage = {
   content: string;
 };
 
+export type GptWebSourceItem = {
+  id: string;
+  title: string;
+  url: string;
+  attribution?: string | null;
+  snippet?: string | null;
+  ref_indices?: string[];
+};
+
+export type GptWebSourceGroup = {
+  type: "grouped_webpages";
+  items: GptWebSourceItem[];
+};
+
 export type GptWebChatCompletionResponse = {
   id?: string;
   model?: string;
@@ -195,6 +209,9 @@ export type GptWebChatCompletionResponse = {
     };
     finish_reason?: string | null;
   }>;
+  x_gpt_web?: {
+    sources?: GptWebSourceGroup[];
+  };
 };
 
 type ImageTaskListResponse = {

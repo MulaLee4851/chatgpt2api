@@ -235,6 +235,9 @@ class ConversationState:
     blocked: bool = False
     tool_invoked: bool | None = None
     turn_use_case: str = ""
+    content_references: list[dict[str, Any]] = field(default_factory=list)
+    safe_urls: list[str] = field(default_factory=list)
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -359,6 +362,197 @@ def add_unique(values: list[str], candidates: list[str]) -> None:
             values.append(candidate)
 
 
+def ensure_list_size(values: list[Any], size: int) -> None:
+    while len(values) <= size:
+        values.append({})
+
+
+def parse_path_segments(path: str) -> list[str]:
+    return [segment for segment in str(path or "").split("/") if segment]
+
+
+def set_nested_value(container: Any, path: list[str], value: Any, op: str) -> Any:
+    if not path:
+        return value
+    current = container if isinstance(container, (list, dict)) else [] if path[0].isdigit() else {}
+    segment = path[0]
+    is_index = segment.isdigit()
+    if len(path) == 1:
+        if is_index:
+            if not isinstance(current, list):
+                current = []
+            index = int(segment)
+            ensure_list_size(current, index)
+            existing = current[index]
+            if op == "append":
+                if isinstance(existing, list) and isinstance(value, list):
+                    existing.extend(value)
+                    current[index] = existing
+                elif isinstance(existing, str) and isinstance(value, str):
+                    current[index] = existing + value
+                elif isinstance(existing, dict) and isinstance(value, dict):
+                    merged = dict(existing)
+                    merged.update(value)
+                    current[index] = merged
+                elif existing in (None, {}, [], ""):
+                    current[index] = value
+                else:
+                    current[index] = value
+            elif op == "remove":
+                current[index] = {} if isinstance(existing, dict) else [] if isinstance(existing, list) else None
+            else:
+                current[index] = value
+            return current
+        if not isinstance(current, dict):
+            current = {}
+        existing = current.get(segment)
+        if op == "append":
+            if isinstance(existing, list) and isinstance(value, list):
+                current[segment] = [*existing, *value]
+            elif isinstance(existing, str) and isinstance(value, str):
+                current[segment] = existing + value
+            elif isinstance(existing, dict) and isinstance(value, dict):
+                merged = dict(existing)
+                merged.update(value)
+                current[segment] = merged
+            elif existing in (None, {}, [], ""):
+                current[segment] = value
+            else:
+                current[segment] = value
+        elif op == "remove":
+            current.pop(segment, None)
+        else:
+            current[segment] = value
+        return current
+
+    if is_index:
+        if not isinstance(current, list):
+            current = []
+        index = int(segment)
+        ensure_list_size(current, index)
+        next_segment = path[1]
+        child = current[index]
+        if not isinstance(child, (list, dict)):
+            child = [] if next_segment.isdigit() else {}
+        current[index] = set_nested_value(child, path[1:], value, op)
+        return current
+
+    if not isinstance(current, dict):
+        current = {}
+    next_segment = path[1]
+    child = current.get(segment)
+    if not isinstance(child, (list, dict)):
+        child = [] if next_segment.isdigit() else {}
+    current[segment] = set_nested_value(child, path[1:], value, op)
+    return current
+
+
+def extract_ref_index(ref: dict[str, Any]) -> str:
+    turn_index = ref.get("turn_index")
+    ref_type = str(ref.get("ref_type") or "").strip()
+    ref_index = ref.get("ref_index")
+    if ref_type == "search" and isinstance(turn_index, int) and isinstance(ref_index, int):
+        return f"turn{turn_index}search{ref_index}"
+    return ""
+
+
+def normalize_source_item(item: dict[str, Any], safe_urls: list[str]) -> dict[str, Any] | None:
+    title = str(item.get("title") or "").strip()
+    item_safe_urls = [str(url).strip() for url in item.get("safe_urls") or [] if str(url).strip()]
+    url = str(item.get("url") or "").strip()
+    preferred_url = item_safe_urls[0] if item_safe_urls else next((safe_url for safe_url in safe_urls if safe_url == url or safe_url.rstrip("?utm_source=chatgpt.com") == url.rstrip("?utm_source=chatgpt.com")), "") or url
+    if not preferred_url:
+        return None
+    ref_indices = [ref_index for ref_index in (extract_ref_index(ref) for ref in item.get("refs") or []) if ref_index]
+    return {
+        "id": preferred_url,
+        "title": title or preferred_url,
+        "url": preferred_url,
+        "attribution": str(item.get("attribution") or "").strip() or None,
+        "snippet": str(item.get("snippet") or "").strip() or None,
+        "ref_indices": ref_indices,
+    }
+
+
+def rebuild_sources(state: ConversationState) -> None:
+    sources: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for reference in state.content_references:
+        if not isinstance(reference, dict):
+            continue
+        if str(reference.get("type") or "") != "grouped_webpages":
+            continue
+        items: list[dict[str, Any]] = []
+        for raw_item in reference.get("items") or []:
+            if not isinstance(raw_item, dict):
+                continue
+            normalized_item = normalize_source_item(raw_item, [str(url) for url in reference.get("safe_urls") or state.safe_urls if str(url)])
+            if not normalized_item:
+                continue
+            normalized_url = str(normalized_item.get("url") or "")
+            if normalized_url in seen_urls:
+                continue
+            seen_urls.add(normalized_url)
+            items.append(normalized_item)
+        if items:
+            sources.append({"type": "grouped_webpages", "items": items})
+    state.sources = sources
+
+
+def update_content_reference_state(state: ConversationState, operation: dict[str, Any]) -> None:
+    path_segments = parse_path_segments(str(operation.get("p") or ""))
+    if not path_segments:
+        return
+    if path_segments[:2] == ["message", "metadata"] and path_segments[2:3] == ["safe_urls"]:
+        value = operation.get("v")
+        if operation.get("o") == "append" and isinstance(value, list):
+            add_unique(state.safe_urls, [str(item).strip() for item in value if str(item).strip()])
+        elif operation.get("o") == "replace" and isinstance(value, list):
+            state.safe_urls = [str(item).strip() for item in value if str(item).strip()]
+        return
+    if path_segments[:3] != ["message", "metadata", "content_references"]:
+        return
+    relative_path = path_segments[3:]
+    op = str(operation.get("o") or "")
+    value = operation.get("v")
+    if not relative_path:
+        if op == "append" and isinstance(value, list):
+            state.content_references.extend(item for item in value if isinstance(item, dict))
+        elif op == "replace" and isinstance(value, list):
+            state.content_references = [item for item in value if isinstance(item, dict)]
+        return
+    state.content_references = set_nested_value(state.content_references, relative_path, value, op)
+
+
+def update_source_state(state: ConversationState, event: dict[str, Any]) -> None:
+    operations = event.get("v") if event.get("o") == "patch" and isinstance(event.get("v"), list) else None
+    if operations is None and event.get("p"):
+        operations = [event]
+    if not operations:
+        for candidate in (event, event.get("v")):
+            if not isinstance(candidate, dict):
+                continue
+            message = candidate.get("message")
+            if not isinstance(message, dict):
+                continue
+            author = message.get("author") or {}
+            if str(author.get("role") or "").strip().lower() != "assistant":
+                continue
+            metadata = message.get("metadata") or {}
+            references = metadata.get("content_references")
+            if isinstance(references, list):
+                state.content_references = [item for item in references if isinstance(item, dict)]
+            safe_urls = metadata.get("safe_urls")
+            if isinstance(safe_urls, list):
+                state.safe_urls = [str(item).strip() for item in safe_urls if str(item).strip()]
+        rebuild_sources(state)
+        return
+    for operation in operations:
+        if isinstance(operation, dict):
+            update_content_reference_state(state, operation)
+    rebuild_sources(state)
+
+
 def extract_conversation_ids(payload: str) -> tuple[str, list[str], list[str]]:
     conversation_match = re.search(r'"conversation_id"\s*:\s*"([^"]+)"', payload)
     conversation_id = conversation_match.group(1) if conversation_match else ""
@@ -400,6 +594,7 @@ def update_conversation_state(state: ConversationState, payload: str, event: dic
             if isinstance(metadata.get("tool_invoked"), bool):
                 state.tool_invoked = metadata["tool_invoked"]
             state.turn_use_case = str(metadata.get("turn_use_case") or state.turn_use_case)
+    update_source_state(state, event)
 
 
 def conversation_base_event(event_type: str, state: ConversationState, **extra: Any) -> dict[str, Any]:
@@ -412,6 +607,7 @@ def conversation_base_event(event_type: str, state: ConversationState, **extra: 
         "blocked": state.blocked,
         "tool_invoked": state.tool_invoked,
         "turn_use_case": state.turn_use_case,
+        "sources": [dict(source) for source in state.sources],
         **extra,
     }
 

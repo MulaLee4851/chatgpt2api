@@ -295,6 +295,7 @@ function GptWebPageContent() {
       const response = await createGptWebChatCompletion(toApiMessages(baseConversation.messages));
       const content = String(response.choices?.[0]?.message?.content || "").trim();
       const replyText = content || "";
+      const replySources = response.x_gpt_web?.sources;
       const updatedConversation: GptWebConversation = {
         ...baseConversation,
         updatedAt: new Date().toISOString(),
@@ -305,6 +306,7 @@ function GptWebPageContent() {
                 content: replyText,
                 status: "success",
                 error: undefined,
+                sources: replySources,
                 createdAt: new Date().toISOString(),
               }
             : message,

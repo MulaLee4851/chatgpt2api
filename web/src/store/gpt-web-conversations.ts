@@ -2,7 +2,7 @@
 
 import localforage from "localforage";
 
-import type { GptWebMessageRole } from "@/lib/api";
+import type { GptWebMessageRole, GptWebSourceGroup } from "@/lib/api";
 
 export type GptWebMessageStatus = "pending" | "success" | "error";
 
@@ -13,6 +13,7 @@ export type GptWebStoredMessage = {
   createdAt: string;
   status?: GptWebMessageStatus;
   error?: string;
+  sources?: GptWebSourceGroup[];
 };
 
 export type GptWebConversation = {
@@ -31,6 +32,47 @@ const gptWebConversationStorage = localforage.createInstance({
 const GPT_WEB_CONVERSATIONS_KEY = "items";
 let gptWebConversationWriteQueue: Promise<void> = Promise.resolve();
 
+function normalizeSourceGroups(value: unknown): GptWebSourceGroup[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const groups = value
+    .map((group) => {
+      if (!group || typeof group !== "object") {
+        return null;
+      }
+      const candidate = group as { type?: unknown; items?: unknown };
+      if (candidate.type !== "grouped_webpages" || !Array.isArray(candidate.items)) {
+        return null;
+      }
+      const items = candidate.items
+        .map((item) => {
+          if (!item || typeof item !== "object") {
+            return null;
+          }
+          const source = item as Record<string, unknown>;
+          const url = String(source.url || "").trim();
+          if (!url) {
+            return null;
+          }
+          return {
+            id: String(source.id || url),
+            title: String(source.title || url),
+            url,
+            attribution: typeof source.attribution === "string" ? source.attribution : undefined,
+            snippet: typeof source.snippet === "string" ? source.snippet : undefined,
+            ref_indices: Array.isArray(source.ref_indices)
+              ? source.ref_indices.filter((ref): ref is string => typeof ref === "string" && ref.trim().length > 0)
+              : undefined,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => Boolean(item));
+      return items.length > 0 ? { type: "grouped_webpages" as const, items } : null;
+    })
+    .filter((group): group is GptWebSourceGroup => Boolean(group));
+  return groups.length > 0 ? groups : undefined;
+}
+
 function normalizeMessage(message: GptWebStoredMessage & Record<string, unknown>): GptWebStoredMessage {
   return {
     id: String(message.id || `${Date.now()}`),
@@ -45,6 +87,7 @@ function normalizeMessage(message: GptWebStoredMessage & Record<string, unknown>
         ? message.status
         : undefined,
     error: typeof message.error === "string" ? message.error : undefined,
+    sources: normalizeSourceGroups(message.sources),
   };
 }
 

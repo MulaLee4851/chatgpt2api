@@ -44,14 +44,76 @@ class ChatCompletionsTests(unittest.TestCase):
             mock.patch.object(openai_v1_chat_complete, "is_image_chat_request", return_value=False),
             mock.patch.object(openai_v1_chat_complete, "text_backend", return_value=backend) as text_backend_mock,
             mock.patch.object(openai_v1_chat_complete, "gpt_web_text_backend") as gpt_backend_mock,
-            mock.patch.object(openai_v1_chat_complete, "collect_text", return_value="ok") as collect_mock,
+            mock.patch.object(
+                openai_v1_chat_complete,
+                "conversation_events",
+                return_value=iter([{"type": "conversation.delta", "delta": "ok", "sources": []}]),
+            ),
         ):
             result = openai_v1_chat_complete.handle(body)
         gpt_backend_mock.assert_not_called()
         text_backend_mock.assert_called_once_with()
-        collect_mock.assert_called_once_with(backend, mock.ANY)
         self.assertEqual(result["model"], "auto")
         self.assertEqual(result["choices"][0]["message"]["content"], "ok")
+
+    def test_gpt_web_non_stream_includes_sources_extension(self):
+        body = {
+            "model": "gpt-web",
+            "messages": [{"role": "user", "content": "今天有什么新闻？"}],
+        }
+        backend = object()
+        sources = [{
+            "type": "grouped_webpages",
+            "items": [{
+                "id": "https://example.com/news",
+                "title": "Example News",
+                "url": "https://example.com/news",
+                "attribution": "Example",
+                "snippet": "Summary",
+                "ref_indices": ["turn0search7"],
+            }],
+        }]
+        events = iter([
+            {"type": "conversation.delta", "delta": "给你整理了今天新闻", "sources": []},
+            {"type": "conversation.event", "sources": sources},
+        ])
+        with (
+            mock.patch.object(openai_v1_chat_complete, "is_image_chat_request", return_value=False),
+            mock.patch.object(openai_v1_chat_complete, "gpt_web_text_backend", return_value=backend) as gpt_backend_mock,
+            mock.patch.object(openai_v1_chat_complete, "text_backend") as text_backend_mock,
+            mock.patch.object(openai_v1_chat_complete, "conversation_events", return_value=events),
+        ):
+            result = openai_v1_chat_complete.handle(body)
+        gpt_backend_mock.assert_called_once_with()
+        text_backend_mock.assert_not_called()
+        self.assertEqual(result["choices"][0]["message"]["content"], "给你整理了今天新闻")
+        self.assertEqual(result["x_gpt_web"]["sources"], sources)
+
+    def test_gpt_web_stream_includes_sources_extension(self):
+        backend = object()
+        sources = [{
+            "type": "grouped_webpages",
+            "items": [{
+                "id": "https://example.com/news",
+                "title": "Example News",
+                "url": "https://example.com/news",
+                "attribution": "Example",
+                "snippet": "Summary",
+                "ref_indices": ["turn0search7"],
+            }],
+        }]
+        events = iter([
+            {"type": "conversation.delta", "delta": "给你整理了", "sources": []},
+            {"type": "conversation.event", "sources": sources},
+            {"type": "conversation.delta", "delta": "今天新闻", "sources": sources},
+        ])
+        with mock.patch.object(openai_v1_chat_complete, "conversation_events", return_value=events):
+            chunks = list(openai_v1_chat_complete.stream_text_chat_completion(backend, [{"role": "user", "content": "今天有什么新闻？"}], "gpt-web"))
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["role"], "assistant")
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "给你整理了")
+        self.assertEqual(chunks[1]["x_gpt_web"]["sources"], sources)
+        self.assertEqual(chunks[2]["x_gpt_web"]["sources"], sources)
+        self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "stop")
 
     def test_text_completion_http(self):
         """测试文本对话的非流式 HTTP 调用。"""

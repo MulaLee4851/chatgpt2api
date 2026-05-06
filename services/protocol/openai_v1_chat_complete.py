@@ -10,7 +10,7 @@ from services.protocol.conversation import (
     ConversationRequest,
     ImageOutput,
     collect_image_outputs,
-    collect_text,
+    conversation_events,
     count_message_tokens,
     count_text_tokens,
     encode_images,
@@ -38,10 +38,11 @@ def completion_response(
     content: str,
     created: int | None = None,
     messages: list[dict[str, Any]] | None = None,
+    sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     prompt_tokens = count_message_tokens(messages, model) if messages else 0
     completion_tokens = count_text_tokens(content, model) if messages else 0
-    return {
+    response = {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": created or int(time.time()),
@@ -57,6 +58,9 @@ def completion_response(
             "total_tokens": prompt_tokens + completion_tokens,
         },
     }
+    if sources:
+        response["x_gpt_web"] = {"sources": sources}
+    return response
 
 
 def stream_text_chat_completion(backend, messages: list[dict[str, Any]], model: str) -> Iterator[dict[str, Any]]:
@@ -64,15 +68,36 @@ def stream_text_chat_completion(backend, messages: list[dict[str, Any]], model: 
     created = int(time.time())
     sent_role = False
     request = ConversationRequest(model=model, messages=messages)
-    for delta_text in stream_text_deltas(backend, request):
-        if not sent_role:
+    last_sources: list[dict[str, Any]] = []
+    for event in conversation_events(backend, messages=request.messages, model=request.model, prompt=request.prompt):
+        event_sources = [item for item in event.get("sources") or [] if isinstance(item, dict)]
+        if event.get("type") == "conversation.delta":
+            delta_text = str(event.get("delta") or "")
+            if not sent_role:
+                sent_role = True
+                chunk = completion_chunk(model, {"role": "assistant", "content": delta_text}, None, completion_id, created)
+            else:
+                chunk = completion_chunk(model, {"content": delta_text}, None, completion_id, created)
+            if event_sources:
+                last_sources = event_sources
+                chunk["x_gpt_web"] = {"sources": event_sources}
+            yield chunk
+            continue
+        if event_sources and event_sources != last_sources:
+            last_sources = event_sources
+            chunk = completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created) if not sent_role else completion_chunk(model, {}, None, completion_id, created)
             sent_role = True
-            yield completion_chunk(model, {"role": "assistant", "content": delta_text}, None, completion_id, created)
-        else:
-            yield completion_chunk(model, {"content": delta_text}, None, completion_id, created)
+            chunk["x_gpt_web"] = {"sources": event_sources}
+            yield chunk
     if not sent_role:
-        yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
-    yield completion_chunk(model, {}, "stop", completion_id, created)
+        chunk = completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
+        if last_sources:
+            chunk["x_gpt_web"] = {"sources": last_sources}
+        yield chunk
+    final_chunk = completion_chunk(model, {}, "stop", completion_id, created)
+    if last_sources:
+        final_chunk["x_gpt_web"] = {"sources": last_sources}
+    yield final_chunk
 
 
 def collect_chat_content(chunks: Iterable[dict[str, Any]]) -> str:
@@ -184,4 +209,15 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     model, messages = text_chat_parts(body)
     request = ConversationRequest(model=model, messages=messages)
     backend = gpt_web_text_backend() if model == GPT_WEB_MODEL else text_backend()
-    return completion_response(model, collect_text(backend, request), messages=messages)
+    content_parts: list[str] = []
+    final_sources: list[dict[str, Any]] = []
+    for event in conversation_events(backend, messages=request.messages, model=request.model, prompt=request.prompt):
+        event_sources = [item for item in event.get("sources") or [] if isinstance(item, dict)]
+        if event_sources:
+            final_sources = event_sources
+        if event.get("type") != "conversation.delta":
+            continue
+        delta = str(event.get("delta") or "")
+        if delta:
+            content_parts.append(delta)
+    return completion_response(model, "".join(content_parts), messages=messages, sources=final_sources if model == GPT_WEB_MODEL else None)

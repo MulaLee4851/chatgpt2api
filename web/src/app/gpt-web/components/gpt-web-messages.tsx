@@ -3,6 +3,7 @@
 import { LoaderCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import type { GptWebSourceItem } from "@/lib/api";
 import type { GptWebConversation, GptWebStoredMessage } from "@/store/gpt-web-conversations";
 
 type GptWebMessagesProps = {
@@ -10,10 +11,38 @@ type GptWebMessagesProps = {
   formatConversationTime: (value: string) => string;
 };
 
+function flattenSources(message: GptWebStoredMessage): GptWebSourceItem[] {
+  const seen = new Set<string>();
+  const items: GptWebSourceItem[] = [];
+  for (const group of message.sources || []) {
+    for (const item of group.items) {
+      const url = String(item.url || "").trim();
+      if (!url || seen.has(url)) {
+        continue;
+      }
+      seen.add(url);
+      items.push(item);
+    }
+  }
+  return items;
+}
+
+function stripCitationPlaceholders(content: string) {
+  return content
+    .replace(/citeturn\d+search\d+/g, "")
+    .replace(/cite/g, "")
+    .replace(//g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function MessageBubble({ message, formatConversationTime }: { message: GptWebStoredMessage; formatConversationTime: (value: string) => string }) {
   const isUser = message.role === "user";
   const isPending = message.status === "pending";
   const isError = message.status === "error";
+  const sources = isUser || isPending || isError ? [] : flattenSources(message);
+  const renderedContent = stripCitationPlaceholders(message.content || (isError ? message.error || "请求失败" : ""));
 
   return (
     <div className={cn("flex w-full", isUser ? "justify-end" : "justify-start")}>
@@ -38,9 +67,33 @@ function MessageBubble({ message, formatConversationTime }: { message: GptWebSto
               正在回复...
             </div>
           ) : (
-            message.content || (isError ? message.error || "请求失败" : "")
+            renderedContent
           )}
         </div>
+        {sources.length > 0 ? (
+          <div className="mt-3 rounded-2xl border border-stone-200/80 bg-stone-50/80 px-4 py-3 text-left shadow-sm">
+            <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-stone-500">Sources</div>
+            <div className="space-y-2.5">
+              {sources.map((source, index) => (
+                <a
+                  key={`${source.url}-${index}`}
+                  href={source.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="block rounded-xl border border-stone-200 bg-white px-3 py-2.5 transition hover:border-stone-300 hover:bg-stone-50"
+                >
+                  <div className="text-sm font-medium leading-5 text-stone-900">{source.title}</div>
+                  {source.attribution ? (
+                    <div className="mt-1 text-xs text-stone-500">{source.attribution}</div>
+                  ) : null}
+                  {source.snippet ? (
+                    <div className="mt-1.5 line-clamp-3 text-xs leading-5 text-stone-600">{source.snippet}</div>
+                  ) : null}
+                </a>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
