@@ -39,6 +39,7 @@ def completion_response(
     created: int | None = None,
     messages: list[dict[str, Any]] | None = None,
     sources: list[dict[str, Any]] | None = None,
+    inline_links: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     prompt_tokens = count_message_tokens(messages, model) if messages else 0
     completion_tokens = count_text_tokens(content, model) if messages else 0
@@ -58,8 +59,13 @@ def completion_response(
             "total_tokens": prompt_tokens + completion_tokens,
         },
     }
+    extension: dict[str, Any] = {}
     if sources:
-        response["x_gpt_web"] = {"sources": sources}
+        extension["sources"] = sources
+    if inline_links:
+        extension["inline_links"] = inline_links
+    if extension:
+        response["x_gpt_web"] = extension
     return response
 
 
@@ -69,8 +75,10 @@ def stream_text_chat_completion(backend, messages: list[dict[str, Any]], model: 
     sent_role = False
     request = ConversationRequest(model=model, messages=messages)
     last_sources: list[dict[str, Any]] = []
+    last_inline_links: list[dict[str, Any]] = []
     for event in conversation_events(backend, messages=request.messages, model=request.model, prompt=request.prompt):
         event_sources = [item for item in event.get("sources") or [] if isinstance(item, dict)]
+        event_inline_links = [item for item in event.get("inline_links") or [] if isinstance(item, dict)]
         if event.get("type") == "conversation.delta":
             delta_text = str(event.get("delta") or "")
             if not sent_role:
@@ -78,25 +86,50 @@ def stream_text_chat_completion(backend, messages: list[dict[str, Any]], model: 
                 chunk = completion_chunk(model, {"role": "assistant", "content": delta_text}, None, completion_id, created)
             else:
                 chunk = completion_chunk(model, {"content": delta_text}, None, completion_id, created)
+            extension: dict[str, Any] = {}
             if event_sources:
                 last_sources = event_sources
-                chunk["x_gpt_web"] = {"sources": event_sources}
+                extension["sources"] = event_sources
+            if event_inline_links:
+                last_inline_links = event_inline_links
+                extension["inline_links"] = event_inline_links
+            if extension:
+                chunk["x_gpt_web"] = extension
             yield chunk
             continue
-        if event_sources and event_sources != last_sources:
-            last_sources = event_sources
+        if (event_sources and event_sources != last_sources) or (event_inline_links and event_inline_links != last_inline_links):
+            if event_sources:
+                last_sources = event_sources
+            if event_inline_links:
+                last_inline_links = event_inline_links
             chunk = completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created) if not sent_role else completion_chunk(model, {}, None, completion_id, created)
             sent_role = True
-            chunk["x_gpt_web"] = {"sources": event_sources}
+            extension: dict[str, Any] = {}
+            if last_sources:
+                extension["sources"] = last_sources
+            if last_inline_links:
+                extension["inline_links"] = last_inline_links
+            if extension:
+                chunk["x_gpt_web"] = extension
             yield chunk
     if not sent_role:
         chunk = completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
+        extension: dict[str, Any] = {}
         if last_sources:
-            chunk["x_gpt_web"] = {"sources": last_sources}
+            extension["sources"] = last_sources
+        if last_inline_links:
+            extension["inline_links"] = last_inline_links
+        if extension:
+            chunk["x_gpt_web"] = extension
         yield chunk
     final_chunk = completion_chunk(model, {}, "stop", completion_id, created)
+    extension: dict[str, Any] = {}
     if last_sources:
-        final_chunk["x_gpt_web"] = {"sources": last_sources}
+        extension["sources"] = last_sources
+    if last_inline_links:
+        extension["inline_links"] = last_inline_links
+    if extension:
+        final_chunk["x_gpt_web"] = extension
     yield final_chunk
 
 
@@ -211,13 +244,23 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     backend = gpt_web_text_backend() if model == GPT_WEB_MODEL else text_backend()
     content_parts: list[str] = []
     final_sources: list[dict[str, Any]] = []
+    final_inline_links: list[dict[str, Any]] = []
     for event in conversation_events(backend, messages=request.messages, model=request.model, prompt=request.prompt):
         event_sources = [item for item in event.get("sources") or [] if isinstance(item, dict)]
+        event_inline_links = [item for item in event.get("inline_links") or [] if isinstance(item, dict)]
         if event_sources:
             final_sources = event_sources
+        if event_inline_links:
+            final_inline_links = event_inline_links
         if event.get("type") != "conversation.delta":
             continue
         delta = str(event.get("delta") or "")
         if delta:
             content_parts.append(delta)
-    return completion_response(model, "".join(content_parts), messages=messages, sources=final_sources if model == GPT_WEB_MODEL else None)
+    return completion_response(
+        model,
+        "".join(content_parts),
+        messages=messages,
+        sources=final_sources if model == GPT_WEB_MODEL else None,
+        inline_links=final_inline_links if model == GPT_WEB_MODEL else None,
+    )

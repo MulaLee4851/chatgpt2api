@@ -193,6 +193,13 @@ export type GptWebSourceItem = {
   ref_indices?: string[];
 };
 
+export type GptWebInlineLink = {
+  id: string;
+  label: string;
+  url: string;
+  ref_indices?: string[];
+};
+
 export type GptWebSourceGroup = {
   type: "grouped_webpages";
   items: GptWebSourceItem[];
@@ -211,6 +218,7 @@ export type GptWebChatCompletionResponse = {
   }>;
   x_gpt_web?: {
     sources?: GptWebSourceGroup[];
+    inline_links?: GptWebInlineLink[];
   };
 };
 

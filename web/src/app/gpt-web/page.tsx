@@ -296,6 +296,7 @@ function GptWebPageContent() {
       const content = String(response.choices?.[0]?.message?.content || "").trim();
       const replyText = content || "";
       const replySources = response.x_gpt_web?.sources;
+      const replyInlineLinks = response.x_gpt_web?.inline_links;
       const updatedConversation: GptWebConversation = {
         ...baseConversation,
         updatedAt: new Date().toISOString(),
@@ -307,6 +308,7 @@ function GptWebPageContent() {
                 status: "success",
                 error: undefined,
                 sources: replySources,
+                inlineLinks: replyInlineLinks,
                 createdAt: new Date().toISOString(),
               }
             : message,

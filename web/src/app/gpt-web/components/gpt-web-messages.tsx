@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { LoaderCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { GptWebSourceItem } from "@/lib/api";
+import type { GptWebInlineLink, GptWebSourceItem } from "@/lib/api";
 import type { GptWebConversation, GptWebStoredMessage } from "@/store/gpt-web-conversations";
 
 type GptWebMessagesProps = {
@@ -60,8 +60,15 @@ function cleanTextSegment(content: string) {
     .replace(/[ \t]{2,}/g, " ");
 }
 
-function buildSourceRefMap(sources: GptWebSourceItem[]) {
+function normalizeSourceLabel(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function buildSourceMaps(sources: GptWebSourceItem[], inlineLinks: GptWebInlineLink[]) {
   const sourceRefMap = new Map<string, GptWebSourceItem>();
+  const sourceLabelMap = new Map<string, GptWebSourceItem>();
+  const inlineRefMap = new Map<string, GptWebInlineLink>();
+  const inlineLabelMap = new Map<string, GptWebInlineLink>();
   for (const source of sources) {
     for (const refIndex of source.ref_indices || []) {
       const key = String(refIndex || "").trim();
@@ -69,12 +76,37 @@ function buildSourceRefMap(sources: GptWebSourceItem[]) {
         sourceRefMap.set(key, source);
       }
     }
+
+    const titleKey = normalizeSourceLabel(String(source.title || ""));
+    if (titleKey && !sourceLabelMap.has(titleKey)) {
+      sourceLabelMap.set(titleKey, source);
+    }
+
+    const attributionKey = normalizeSourceLabel(String(source.attribution || ""));
+    if (attributionKey && !sourceLabelMap.has(attributionKey)) {
+      sourceLabelMap.set(attributionKey, source);
+    }
   }
-  return sourceRefMap;
+
+  for (const inlineLink of inlineLinks) {
+    for (const refIndex of inlineLink.ref_indices || []) {
+      const key = String(refIndex || "").trim();
+      if (key && !inlineRefMap.has(key)) {
+        inlineRefMap.set(key, inlineLink);
+      }
+    }
+
+    const labelKey = normalizeSourceLabel(String(inlineLink.label || ""));
+    if (labelKey && !inlineLabelMap.has(labelKey)) {
+      inlineLabelMap.set(labelKey, inlineLink);
+    }
+  }
+
+  return { sourceRefMap, sourceLabelMap, inlineRefMap, inlineLabelMap };
 }
 
-function renderMessageContent(content: string, sources: GptWebSourceItem[]) {
-  const sourceRefMap = buildSourceRefMap(sources);
+function renderMessageContent(content: string, sources: GptWebSourceItem[], inlineLinks: GptWebInlineLink[]) {
+  const { sourceRefMap, sourceLabelMap, inlineRefMap, inlineLabelMap } = buildSourceMaps(sources, inlineLinks);
   const nodes: ReactNode[] = [];
   const tokenPattern = /url([^]+)(https?:\/\/[^\s]+|turn\d+(?:search|news)\d+)(?:[^]*)??|entity(\[[^\]]+\])?|navlist[^]*?|citeturn\d+(?:search|news)\d+?/g;
   let lastIndex = 0;
@@ -92,9 +124,10 @@ function renderMessageContent(content: string, sources: GptWebSourceItem[]) {
     const entity = String(match[3] || "").trim();
 
     if (token.startsWith("url")) {
-      const source = sourceRefMap.get(target);
-      const href = source?.url || (target.startsWith("http://") || target.startsWith("https://") ? target : "");
-      const text = label || source?.title || href;
+      const inlineLink = inlineRefMap.get(target) || inlineLabelMap.get(normalizeSourceLabel(label));
+      const source = sourceRefMap.get(target) || sourceLabelMap.get(normalizeSourceLabel(label));
+      const href = inlineLink?.url || source?.url || (target.startsWith("http://") || target.startsWith("https://") ? target : "");
+      const text = label || inlineLink?.label || source?.title || href;
       if (href && text) {
         nodes.push(
           <a
@@ -133,7 +166,8 @@ function MessageBubble({ message, formatConversationTime }: { message: GptWebSto
   const isPending = message.status === "pending";
   const isError = message.status === "error";
   const sources = isUser || isPending || isError ? [] : flattenSources(message);
-  const renderedContent = renderMessageContent(message.content || (isError ? message.error || "请求失败" : ""), sources);
+  const inlineLinks = isUser || isPending || isError ? [] : message.inlineLinks || [];
+  const renderedContent = renderMessageContent(message.content || (isError ? message.error || "请求失败" : ""), sources, inlineLinks);
 
   return (
     <div className={cn("flex w-full", isUser ? "justify-end" : "justify-start")}>

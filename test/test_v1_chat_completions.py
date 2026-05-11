@@ -115,6 +115,51 @@ class ChatCompletionsTests(unittest.TestCase):
         self.assertEqual(chunks[2]["x_gpt_web"]["sources"], sources)
         self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "stop")
 
+    def test_gpt_web_non_stream_includes_inline_links_extension(self):
+        body = {
+            "model": "gpt-web",
+            "messages": [{"role": "user", "content": "给我直接下载链接。"}],
+        }
+        backend = object()
+        inline_links = [{
+            "id": "https://example.com/audio.mp3",
+            "label": "Stories.mp3 直接下载",
+            "url": "https://example.com/audio.mp3",
+            "ref_indices": ["turn0search7"],
+        }]
+        events = iter([
+            {"type": "conversation.delta", "delta": "直接下载：", "sources": [], "inline_links": []},
+            {"type": "conversation.event", "sources": [], "inline_links": inline_links},
+        ])
+        with (
+            mock.patch.object(openai_v1_chat_complete, "is_image_chat_request", return_value=False),
+            mock.patch.object(openai_v1_chat_complete, "gpt_web_text_backend", return_value=backend),
+            mock.patch.object(openai_v1_chat_complete, "text_backend"),
+            mock.patch.object(openai_v1_chat_complete, "conversation_events", return_value=events),
+        ):
+            result = openai_v1_chat_complete.handle(body)
+        self.assertEqual(result["choices"][0]["message"]["content"], "直接下载：")
+        self.assertEqual(result["x_gpt_web"]["inline_links"], inline_links)
+
+    def test_gpt_web_stream_includes_inline_links_extension(self):
+        backend = object()
+        inline_links = [{
+            "id": "https://example.com/audio.mp3",
+            "label": "Stories.mp3 直接下载",
+            "url": "https://example.com/audio.mp3",
+            "ref_indices": ["turn0search7"],
+        }]
+        events = iter([
+            {"type": "conversation.delta", "delta": "直接下载：", "sources": [], "inline_links": []},
+            {"type": "conversation.event", "sources": [], "inline_links": inline_links},
+            {"type": "conversation.delta", "delta": "Stories", "sources": [], "inline_links": inline_links},
+        ])
+        with mock.patch.object(openai_v1_chat_complete, "conversation_events", return_value=events):
+            chunks = list(openai_v1_chat_complete.stream_text_chat_completion(backend, [{"role": "user", "content": "给我直接下载链接。"}], "gpt-web"))
+        self.assertEqual(chunks[1]["x_gpt_web"]["inline_links"], inline_links)
+        self.assertEqual(chunks[2]["x_gpt_web"]["inline_links"], inline_links)
+        self.assertEqual(chunks[-1]["x_gpt_web"]["inline_links"], inline_links)
+
     def test_text_completion_http(self):
         """测试文本对话的非流式 HTTP 调用。"""
         response = requests.post(

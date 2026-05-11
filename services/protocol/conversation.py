@@ -238,6 +238,7 @@ class ConversationState:
     content_references: list[dict[str, Any]] = field(default_factory=list)
     safe_urls: list[str] = field(default_factory=list)
     sources: list[dict[str, Any]] = field(default_factory=list)
+    inline_links: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -474,12 +475,50 @@ def normalize_source_item(item: dict[str, Any], safe_urls: list[str]) -> dict[st
     }
 
 
+def extract_markdown_link(value: str) -> tuple[str, str] | None:
+    text = str(value or "").strip()
+    match = re.match(r"^\[([^\]]+)\]\((https?://[^)]+)\)$", text)
+    if not match:
+        return None
+    label = str(match.group(1) or "").strip()
+    url = str(match.group(2) or "").strip()
+    if not label or not url:
+        return None
+    return label, url
+
+
+def normalize_inline_link(reference: dict[str, Any], fallback_safe_urls: list[str]) -> dict[str, Any] | None:
+    if str(reference.get("type") or "") != "alt_text":
+        return None
+    alt_link = extract_markdown_link(str(reference.get("alt") or ""))
+    if not alt_link:
+        return None
+    label, url = alt_link
+    safe_urls = [str(item).strip() for item in reference.get("safe_urls") or fallback_safe_urls if str(item).strip()]
+    preferred_url = next((safe_url for safe_url in safe_urls if safe_url == url or safe_url.rstrip("?utm_source=chatgpt.com") == url.rstrip("?utm_source=chatgpt.com")), "") or url
+    ref_indices = [ref_index for ref_index in (extract_ref_index(ref) for ref in reference.get("refs") or []) if ref_index]
+    return {
+        "id": preferred_url,
+        "label": label,
+        "url": preferred_url,
+        "ref_indices": ref_indices,
+    }
+
+
 def rebuild_sources(state: ConversationState) -> None:
     sources: list[dict[str, Any]] = []
+    inline_links: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
+    seen_inline_links: set[tuple[str, str]] = set()
     for reference in state.content_references:
         if not isinstance(reference, dict):
             continue
+        normalized_inline_link = normalize_inline_link(reference, state.safe_urls)
+        if normalized_inline_link:
+            inline_key = (str(normalized_inline_link.get("label") or ""), str(normalized_inline_link.get("url") or ""))
+            if inline_key not in seen_inline_links:
+                seen_inline_links.add(inline_key)
+                inline_links.append(normalized_inline_link)
         if str(reference.get("type") or "") != "grouped_webpages":
             continue
         items: list[dict[str, Any]] = []
@@ -497,6 +536,7 @@ def rebuild_sources(state: ConversationState) -> None:
         if items:
             sources.append({"type": "grouped_webpages", "items": items})
     state.sources = sources
+    state.inline_links = inline_links
 
 
 def update_content_reference_state(state: ConversationState, operation: dict[str, Any]) -> None:
@@ -608,6 +648,7 @@ def conversation_base_event(event_type: str, state: ConversationState, **extra: 
         "tool_invoked": state.tool_invoked,
         "turn_use_case": state.turn_use_case,
         "sources": [dict(source) for source in state.sources],
+        "inline_links": [dict(link) for link in state.inline_links],
         **extra,
     }
 

@@ -2,7 +2,7 @@
 
 import localforage from "localforage";
 
-import type { GptWebMessageRole, GptWebSourceGroup } from "@/lib/api";
+import type { GptWebInlineLink, GptWebMessageRole, GptWebSourceGroup } from "@/lib/api";
 
 export type GptWebMessageStatus = "pending" | "success" | "error";
 
@@ -14,6 +14,7 @@ export type GptWebStoredMessage = {
   status?: GptWebMessageStatus;
   error?: string;
   sources?: GptWebSourceGroup[];
+  inlineLinks?: GptWebInlineLink[];
 };
 
 export type GptWebConversation = {
@@ -73,6 +74,34 @@ function normalizeSourceGroups(value: unknown): GptWebSourceGroup[] | undefined 
   return groups.length > 0 ? groups : undefined;
 }
 
+function normalizeInlineLinks(value: unknown): GptWebInlineLink[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const links = value
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const link = item as Record<string, unknown>;
+      const url = String(link.url || "").trim();
+      const label = String(link.label || "").trim();
+      if (!url || !label) {
+        return null;
+      }
+      return {
+        id: String(link.id || `${label}:${url}`),
+        label,
+        url,
+        ref_indices: Array.isArray(link.ref_indices)
+          ? link.ref_indices.filter((ref): ref is string => typeof ref === "string" && ref.trim().length > 0)
+          : undefined,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  return links.length > 0 ? links : undefined;
+}
+
 function normalizeMessage(message: GptWebStoredMessage & Record<string, unknown>): GptWebStoredMessage {
   return {
     id: String(message.id || `${Date.now()}`),
@@ -88,6 +117,7 @@ function normalizeMessage(message: GptWebStoredMessage & Record<string, unknown>
         : undefined,
     error: typeof message.error === "string" ? message.error : undefined,
     sources: normalizeSourceGroups(message.sources),
+    inlineLinks: normalizeInlineLinks(message.inlineLinks),
   };
 }
 
