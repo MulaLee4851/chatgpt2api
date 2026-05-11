@@ -1,10 +1,65 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
+import types
 import unittest
 from unittest import mock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+MULTIPART_AVAILABLE = importlib.util.find_spec("python_multipart") is not None or importlib.util.find_spec("multipart") is not None
+
+fake_database_storage = types.ModuleType("services.storage.database_storage")
+fake_database_storage.DatabaseStorageBackend = object
+sys.modules.setdefault("services.storage.database_storage", fake_database_storage)
+
+fake_git_storage = types.ModuleType("services.storage.git_storage")
+fake_git_storage.GitStorageBackend = object
+sys.modules.setdefault("services.storage.git_storage", fake_git_storage)
+
+fake_pybase64 = types.ModuleType("pybase64")
+fake_pybase64.b64encode = lambda data, altchars=None: data
+fake_pybase64.b64decode = lambda data, altchars=None, validate=False: data
+sys.modules.setdefault("pybase64", fake_pybase64)
+
+fake_pow = types.ModuleType("utils.pow")
+fake_pow.build_legacy_requirements_token = lambda *args, **kwargs: ""
+fake_pow.build_proof_token = lambda *args, **kwargs: ""
+fake_pow.parse_pow_resources = lambda *args, **kwargs: []
+sys.modules.setdefault("utils.pow", fake_pow)
+
+fake_openai_backend_api = types.ModuleType("services.openai_backend_api")
+
+class FakeOpenAIBackendAPI:
+    def __init__(self, *args, **kwargs):
+        self.access_token = kwargs.get("access_token", "")
+
+    def stream_conversation(self, *args, **kwargs):
+        return iter(())
+
+    def get_user_info(self):
+        return {}
+
+class FakeInvalidAccessTokenError(Exception):
+    pass
+
+fake_openai_backend_api.OpenAIBackendAPI = FakeOpenAIBackendAPI
+fake_openai_backend_api.InvalidAccessTokenError = FakeInvalidAccessTokenError
+sys.modules.setdefault("services.openai_backend_api", fake_openai_backend_api)
+
+fake_api_app = types.ModuleType("api.app")
+fake_api_app.create_app = lambda *args, **kwargs: None
+sys.modules.setdefault("api.app", fake_api_app)
+
+fake_multipart = types.ModuleType("multipart")
+fake_multipart.__version__ = "0.0-test"
+sys.modules.setdefault("multipart", fake_multipart)
+
+fake_multipart_submodule = types.ModuleType("multipart.multipart")
+fake_multipart_submodule.parse_options_header = lambda value: (value, {})
+sys.modules.setdefault("multipart.multipart", fake_multipart_submodule)
 
 import api.image_tasks as image_tasks_module
 
@@ -25,7 +80,7 @@ class FakeImageTaskService:
             "mode": "generate",
             "created_at": "2026-01-01 00:00:00",
             "updated_at": "2026-01-01 00:00:00",
-            "data": [{"url": f"{kwargs['base_url']}/images/fake.png"}],
+            "data": [{"b64_json": "ZmFrZQ=="}],
         }
 
     def submit_edit(self, identity, **kwargs):
@@ -47,7 +102,7 @@ class FakeImageTaskService:
                     "mode": "generate",
                     "created_at": "2026-01-01 00:00:00",
                     "updated_at": "2026-01-01 00:00:00",
-                    "data": [{"url": "http://testserver/images/fake.png"}],
+                    "data": [{"b64_json": "ZmFrZQ=="}],
                 }
                 for task_id in ids
                 if task_id != "missing"
@@ -79,6 +134,7 @@ class ImageTasksApiTests(unittest.TestCase):
         self.assertEqual(payload["status"], "success")
         self.assertEqual(len(self.fake_service.generation_calls), 1)
 
+    @unittest.skipUnless(MULTIPART_AVAILABLE, "python-multipart is not installed")
     def test_create_edit_task_accepts_multiple_images(self):
         response = self.client.post(
             "/api/image-tasks/edits",

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -16,7 +17,24 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { createUserKey, deleteUserKey, fetchUserKeys, updateUserKey, type UserKey } from "@/lib/api";
+import {
+  createUserKey,
+  deleteUserKey,
+  fetchUserKeys,
+  updateUserKey,
+  type UserKey,
+  type UserKeyLimits,
+  type UserKeyPermissions,
+} from "@/lib/api";
+
+type LimitFormState = {
+  expiresAtUnlimited: boolean;
+  expiresAt: string;
+  maxTokensUnlimited: boolean;
+  maxTokens: string;
+  maxImagesUnlimited: boolean;
+  maxImages: string;
+};
 
 function formatDateTime(value?: string | null) {
   if (!value) {
@@ -35,12 +53,135 @@ function formatDateTime(value?: string | null) {
   }).format(date);
 }
 
+function toDateTimeLocalValue(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  const hours = `${date.getHours()}`.padStart(2, "0");
+  const minutes = `${date.getMinutes()}`.padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function createDefaultPermissions(): UserKeyPermissions {
+  return { chat: true, image: true };
+}
+
+function createDefaultLimitsForm(): LimitFormState {
+  return {
+    expiresAtUnlimited: true,
+    expiresAt: "",
+    maxTokensUnlimited: true,
+    maxTokens: "",
+    maxImagesUnlimited: true,
+    maxImages: "",
+  };
+}
+
+function limitsFormFromItem(item: UserKey): LimitFormState {
+  return {
+    expiresAtUnlimited: item.limits.expires_at == null,
+    expiresAt: toDateTimeLocalValue(item.limits.expires_at),
+    maxTokensUnlimited: item.limits.max_tokens == null,
+    maxTokens: item.limits.max_tokens == null ? "" : String(item.limits.max_tokens),
+    maxImagesUnlimited: item.limits.max_images == null,
+    maxImages: item.limits.max_images == null ? "" : String(item.limits.max_images),
+  };
+}
+
+function buildLimitsPayload(form: LimitFormState): UserKeyLimits {
+  let expiresAt: string | null = null;
+  if (!form.expiresAtUnlimited) {
+    if (!form.expiresAt.trim()) {
+      throw new Error("请填写有效期时间，或勾选无限时长");
+    }
+    const parsed = new Date(form.expiresAt);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new Error("有效期时间格式不正确");
+    }
+    expiresAt = parsed.toISOString();
+  }
+
+  let maxTokens: number | null = null;
+  if (!form.maxTokensUnlimited) {
+    const normalized = form.maxTokens.trim();
+    if (!normalized) {
+      throw new Error("请填写 tokens 上限，或勾选无限 tokens");
+    }
+    maxTokens = Number(normalized);
+    if (!Number.isInteger(maxTokens) || maxTokens < 0) {
+      throw new Error("tokens 上限必须是大于等于 0 的整数");
+    }
+  }
+
+  let maxImages: number | null = null;
+  if (!form.maxImagesUnlimited) {
+    const normalized = form.maxImages.trim();
+    if (!normalized) {
+      throw new Error("请填写图片次数上限，或勾选无限图片次数");
+    }
+    maxImages = Number(normalized);
+    if (!Number.isInteger(maxImages) || maxImages < 0) {
+      throw new Error("图片次数上限必须是大于等于 0 的整数");
+    }
+  }
+
+  return {
+    expires_at: expiresAt,
+    max_tokens: maxTokens,
+    max_images: maxImages,
+  };
+}
+
+function permissionsEqual(left: UserKeyPermissions, right: UserKeyPermissions) {
+  return left.chat === right.chat && left.image === right.image;
+}
+
+function limitsEqual(left: UserKeyLimits, right: UserKeyLimits) {
+  return (
+    left.expires_at === right.expires_at &&
+    left.max_tokens === right.max_tokens &&
+    left.max_images === right.max_images
+  );
+}
+
+function formatPermissions(permissions: UserKeyPermissions) {
+  const labels = [];
+  if (permissions.chat) {
+    labels.push("对话");
+  }
+  if (permissions.image) {
+    labels.push("生图");
+  }
+  return labels.length > 0 ? labels.join(" / ") : "未开启";
+}
+
+function formatLimits(limits: UserKeyLimits) {
+  return [
+    limits.expires_at ? `时效至 ${formatDateTime(limits.expires_at)}` : "时长无限",
+    limits.max_tokens == null ? "Tokens 无限" : `Tokens ${limits.max_tokens}`,
+    limits.max_images == null ? "图片次数无限" : `图片次数 ${limits.max_images}`,
+  ].join(" · ");
+}
+
+function formatUsage(item: UserKey) {
+  return `已用 Tokens ${item.usage.used_tokens} · 已生图 ${item.usage.used_images}`;
+}
+
 export function UserKeysCard() {
   const didLoadRef = useRef(false);
   const [items, setItems] = useState<UserKey[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [name, setName] = useState("");
+  const [createPermissions, setCreatePermissions] = useState<UserKeyPermissions>(createDefaultPermissions);
+  const [createLimitsForm, setCreateLimitsForm] = useState<LimitFormState>(createDefaultLimitsForm);
   const [isCreating, setIsCreating] = useState(false);
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
   const [revealedKey, setRevealedKey] = useState("");
@@ -48,6 +189,8 @@ export function UserKeysCard() {
   const [editingItem, setEditingItem] = useState<UserKey | null>(null);
   const [editName, setEditName] = useState("");
   const [editKey, setEditKey] = useState("");
+  const [editPermissions, setEditPermissions] = useState<UserKeyPermissions>(createDefaultPermissions);
+  const [editLimitsForm, setEditLimitsForm] = useState<LimitFormState>(createDefaultLimitsForm);
 
   const load = async () => {
     setIsLoading(true);
@@ -70,12 +213,30 @@ export function UserKeysCard() {
   }, []);
 
   const handleCreate = async () => {
+    if (!createPermissions.chat && !createPermissions.image) {
+      toast.error("至少需要开启一种权限");
+      return;
+    }
+    let limits: UserKeyLimits;
+    try {
+      limits = buildLimitsPayload(createLimitsForm);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "额度配置不正确");
+      return;
+    }
+
     setIsCreating(true);
     try {
-      const data = await createUserKey(name.trim());
+      const data = await createUserKey({
+        name: name.trim(),
+        permissions: createPermissions,
+        limits,
+      });
       setItems(data.items);
       setRevealedKey(data.key);
       setName("");
+      setCreatePermissions(createDefaultPermissions());
+      setCreateLimitsForm(createDefaultLimitsForm());
       setIsDialogOpen(false);
       toast.success("用户密钥已创建");
     } catch (error) {
@@ -132,29 +293,48 @@ export function UserKeysCard() {
     setEditingItem(item);
     setEditName(item.name);
     setEditKey("");
+    setEditPermissions(item.permissions);
+    setEditLimitsForm(limitsFormFromItem(item));
   };
 
   const handleEdit = async () => {
     if (!editingItem) {
       return;
     }
+    if (!editPermissions.chat && !editPermissions.image) {
+      toast.error("至少需要开启一种权限");
+      return;
+    }
+    let limits: UserKeyLimits;
+    try {
+      limits = buildLimitsPayload(editLimitsForm);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "额度配置不正确");
+      return;
+    }
     const item = editingItem;
     const trimmedName = editName.trim();
     const trimmedKey = editKey.trim();
-    if (trimmedName === item.name && !trimmedKey) {
+    const nameChanged = trimmedName !== item.name;
+    const keyChanged = Boolean(trimmedKey);
+    const permissionsChanged = !permissionsEqual(editPermissions, item.permissions);
+    const limitsChanged = !limitsEqual(limits, item.limits);
+    if (!nameChanged && !keyChanged && !permissionsChanged && !limitsChanged) {
       setEditingItem(null);
       return;
     }
     setItemPending(item.id, true);
     try {
       const data = await updateUserKey(item.id, {
-        ...(trimmedName !== item.name ? { name: trimmedName } : {}),
-        ...(trimmedKey ? { key: trimmedKey } : {}),
+        ...(nameChanged ? { name: trimmedName } : {}),
+        ...(keyChanged ? { key: trimmedKey } : {}),
+        ...(permissionsChanged ? { permissions: editPermissions } : {}),
+        ...(limitsChanged ? { limits } : {}),
       });
       setItems(data.items);
       setEditingItem(null);
       setEditKey("");
-      toast.success(trimmedKey ? "用户密钥已更新" : "用户名称已更新");
+      toast.success("用户密钥已更新");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "更新用户密钥失败");
     } finally {
@@ -182,7 +362,7 @@ export function UserKeysCard() {
               </div>
               <div>
                 <h2 className="text-lg font-semibold tracking-tight">用户密钥管理</h2>
-                <p className="text-sm text-stone-500">为普通用户创建专用密钥；普通用户只能进入画图页，不能查看设置和号池。</p>
+                <p className="text-sm text-stone-500">创建普通用户密钥时必须明确配置对话/生图权限，以及时间、tokens、图片次数额度。</p>
               </div>
             </div>
             <Button className="h-9 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800" onClick={() => setIsDialogOpen(true)}>
@@ -229,11 +409,16 @@ export function UserKeysCard() {
                         <Badge variant={item.enabled ? "success" : "secondary"} className="rounded-md">
                           {item.enabled ? "已启用" : "已禁用"}
                         </Badge>
+                        <Badge variant="secondary" className="rounded-md bg-stone-100 text-stone-700">
+                          {formatPermissions(item.permissions)}
+                        </Badge>
                       </div>
                       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-stone-500">
                         <span>创建时间 {formatDateTime(item.created_at)}</span>
                         <span>最近使用 {formatDateTime(item.last_used_at)}</span>
                       </div>
+                      <div className="text-xs leading-5 text-stone-500">{formatLimits(item.limits)}</div>
+                      <div className="text-xs leading-5 text-stone-500">{formatUsage(item)}</div>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -283,21 +468,94 @@ export function UserKeysCard() {
       </Card>
 
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="rounded-2xl p-6">
+        <DialogContent className="rounded-2xl p-6 sm:max-w-2xl">
           <DialogHeader className="gap-2">
             <DialogTitle>创建用户密钥</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              可选填写一个备注名称，方便区分不同使用者；创建后会生成一条只能查看一次的原始密钥。
+              创建时必须同时配置权限和额度；无限时长、无限 tokens、无限图片次数都需要显式勾选。
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-stone-700">名称（可选）</label>
-            <Input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="例如：设计同学 A、运营临时账号"
-              className="h-11 rounded-xl border-stone-200 bg-white"
-            />
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">名称（可选）</label>
+              <Input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="例如：设计同学 A、运营临时账号"
+                className="h-11 rounded-xl border-stone-200 bg-white"
+              />
+            </div>
+
+            <div className="space-y-3 rounded-2xl border border-stone-200 p-4">
+              <div className="text-sm font-medium text-stone-800">权限</div>
+              <label className="flex items-center gap-3 text-sm text-stone-700">
+                <Checkbox checked={createPermissions.chat} onCheckedChange={(checked) => setCreatePermissions((current) => ({ ...current, chat: Boolean(checked) }))} />
+                开启对话权限
+              </label>
+              <label className="flex items-center gap-3 text-sm text-stone-700">
+                <Checkbox checked={createPermissions.image} onCheckedChange={(checked) => setCreatePermissions((current) => ({ ...current, image: Boolean(checked) }))} />
+                开启生图权限
+              </label>
+            </div>
+
+            <div className="space-y-4 rounded-2xl border border-stone-200 p-4">
+              <div className="text-sm font-medium text-stone-800">额度</div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <label className="text-sm font-medium text-stone-700">有效期</label>
+                  <label className="flex items-center gap-2 text-sm text-stone-600">
+                    <Checkbox checked={createLimitsForm.expiresAtUnlimited} onCheckedChange={(checked) => setCreateLimitsForm((current) => ({ ...current, expiresAtUnlimited: Boolean(checked) }))} />
+                    无限时长
+                  </label>
+                </div>
+                <Input
+                  type="datetime-local"
+                  value={createLimitsForm.expiresAt}
+                  onChange={(event) => setCreateLimitsForm((current) => ({ ...current, expiresAt: event.target.value }))}
+                  disabled={createLimitsForm.expiresAtUnlimited}
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <label className="text-sm font-medium text-stone-700">Tokens 上限</label>
+                  <label className="flex items-center gap-2 text-sm text-stone-600">
+                    <Checkbox checked={createLimitsForm.maxTokensUnlimited} onCheckedChange={(checked) => setCreateLimitsForm((current) => ({ ...current, maxTokensUnlimited: Boolean(checked) }))} />
+                    无限 Tokens
+                  </label>
+                </div>
+                <Input
+                  type="number"
+                  min="0"
+                  value={createLimitsForm.maxTokens}
+                  onChange={(event) => setCreateLimitsForm((current) => ({ ...current, maxTokens: event.target.value }))}
+                  disabled={createLimitsForm.maxTokensUnlimited}
+                  placeholder="例如：200000"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <label className="text-sm font-medium text-stone-700">图片生成次数上限</label>
+                  <label className="flex items-center gap-2 text-sm text-stone-600">
+                    <Checkbox checked={createLimitsForm.maxImagesUnlimited} onCheckedChange={(checked) => setCreateLimitsForm((current) => ({ ...current, maxImagesUnlimited: Boolean(checked) }))} />
+                    无限图片次数
+                  </label>
+                </div>
+                <Input
+                  type="number"
+                  min="0"
+                  value={createLimitsForm.maxImages}
+                  onChange={(event) => setCreateLimitsForm((current) => ({ ...current, maxImages: event.target.value }))}
+                  disabled={createLimitsForm.maxImagesUnlimited}
+                  placeholder="例如：100"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+              </div>
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -362,14 +620,14 @@ export function UserKeysCard() {
           }
         }}
       >
-        <DialogContent className="rounded-2xl p-6">
+        <DialogContent className="rounded-2xl p-6 sm:max-w-2xl">
           <DialogHeader className="gap-2">
             <DialogTitle>编辑用户密钥</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              可以修改备注名称；如需更换专用密钥，直接填写新的原始密钥即可。留空则保持当前密钥不变。
+              可以修改名称、权限、额度和原始密钥；留空则保持当前密钥不变。
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-5">
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">名称</label>
               <Input
@@ -379,6 +637,7 @@ export function UserKeysCard() {
                 className="h-11 rounded-xl border-stone-200 bg-white"
               />
             </div>
+
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">新的专用密钥（可选）</label>
               <Input
@@ -390,6 +649,77 @@ export function UserKeysCard() {
               <p className="text-xs leading-5 text-stone-500">
                 保存后旧密钥会立即失效，新密钥生效。系统仍只保存哈希，不会回显当前密钥。
               </p>
+            </div>
+
+            <div className="space-y-3 rounded-2xl border border-stone-200 p-4">
+              <div className="text-sm font-medium text-stone-800">权限</div>
+              <label className="flex items-center gap-3 text-sm text-stone-700">
+                <Checkbox checked={editPermissions.chat} onCheckedChange={(checked) => setEditPermissions((current) => ({ ...current, chat: Boolean(checked) }))} />
+                开启对话权限
+              </label>
+              <label className="flex items-center gap-3 text-sm text-stone-700">
+                <Checkbox checked={editPermissions.image} onCheckedChange={(checked) => setEditPermissions((current) => ({ ...current, image: Boolean(checked) }))} />
+                开启生图权限
+              </label>
+            </div>
+
+            <div className="space-y-4 rounded-2xl border border-stone-200 p-4">
+              <div className="text-sm font-medium text-stone-800">额度</div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <label className="text-sm font-medium text-stone-700">有效期</label>
+                  <label className="flex items-center gap-2 text-sm text-stone-600">
+                    <Checkbox checked={editLimitsForm.expiresAtUnlimited} onCheckedChange={(checked) => setEditLimitsForm((current) => ({ ...current, expiresAtUnlimited: Boolean(checked) }))} />
+                    无限时长
+                  </label>
+                </div>
+                <Input
+                  type="datetime-local"
+                  value={editLimitsForm.expiresAt}
+                  onChange={(event) => setEditLimitsForm((current) => ({ ...current, expiresAt: event.target.value }))}
+                  disabled={editLimitsForm.expiresAtUnlimited}
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <label className="text-sm font-medium text-stone-700">Tokens 上限</label>
+                  <label className="flex items-center gap-2 text-sm text-stone-600">
+                    <Checkbox checked={editLimitsForm.maxTokensUnlimited} onCheckedChange={(checked) => setEditLimitsForm((current) => ({ ...current, maxTokensUnlimited: Boolean(checked) }))} />
+                    无限 Tokens
+                  </label>
+                </div>
+                <Input
+                  type="number"
+                  min="0"
+                  value={editLimitsForm.maxTokens}
+                  onChange={(event) => setEditLimitsForm((current) => ({ ...current, maxTokens: event.target.value }))}
+                  disabled={editLimitsForm.maxTokensUnlimited}
+                  placeholder="例如：200000"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <label className="text-sm font-medium text-stone-700">图片生成次数上限</label>
+                  <label className="flex items-center gap-2 text-sm text-stone-600">
+                    <Checkbox checked={editLimitsForm.maxImagesUnlimited} onCheckedChange={(checked) => setEditLimitsForm((current) => ({ ...current, maxImagesUnlimited: Boolean(checked) }))} />
+                    无限图片次数
+                  </label>
+                </div>
+                <Input
+                  type="number"
+                  min="0"
+                  value={editLimitsForm.maxImages}
+                  onChange={(event) => setEditLimitsForm((current) => ({ ...current, maxImages: event.target.value }))}
+                  disabled={editLimitsForm.maxImagesUnlimited}
+                  placeholder="例如：100"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+              </div>
             </div>
           </div>
           <DialogFooter>

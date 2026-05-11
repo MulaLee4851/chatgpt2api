@@ -1,12 +1,70 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
 
+fake_database_storage = types.ModuleType("services.storage.database_storage")
+fake_database_storage.DatabaseStorageBackend = object
+sys.modules.setdefault("services.storage.database_storage", fake_database_storage)
+
+fake_git_storage = types.ModuleType("services.storage.git_storage")
+fake_git_storage.GitStorageBackend = object
+sys.modules.setdefault("services.storage.git_storage", fake_git_storage)
+
+fake_pybase64 = types.ModuleType("pybase64")
+fake_pybase64.b64encode = lambda data, altchars=None: data
+fake_pybase64.b64decode = lambda data, altchars=None, validate=False: data
+sys.modules.setdefault("pybase64", fake_pybase64)
+
+fake_pow = types.ModuleType("utils.pow")
+fake_pow.build_legacy_requirements_token = lambda *args, **kwargs: ""
+fake_pow.build_proof_token = lambda *args, **kwargs: ""
+fake_pow.parse_pow_resources = lambda *args, **kwargs: []
+sys.modules.setdefault("utils.pow", fake_pow)
+
+fake_openai_backend_api = types.ModuleType("services.openai_backend_api")
+
+class FakeOpenAIBackendAPI:
+    def __init__(self, *args, **kwargs):
+        self.access_token = kwargs.get("access_token", "")
+
+    def stream_conversation(self, *args, **kwargs):
+        return iter(())
+
+    def get_user_info(self):
+        return {}
+
+class FakeInvalidAccessTokenError(Exception):
+    pass
+
+fake_openai_backend_api.OpenAIBackendAPI = FakeOpenAIBackendAPI
+fake_openai_backend_api.InvalidAccessTokenError = FakeInvalidAccessTokenError
+sys.modules.setdefault("services.openai_backend_api", fake_openai_backend_api)
+
+fake_api_app = types.ModuleType("api.app")
+fake_api_app.create_app = lambda *args, **kwargs: None
+sys.modules.setdefault("api.app", fake_api_app)
+
+fake_multipart = types.ModuleType("multipart")
+fake_multipart.__version__ = "0.0-test"
+sys.modules.setdefault("multipart", fake_multipart)
+
+fake_multipart_submodule = types.ModuleType("multipart.multipart")
+fake_multipart_submodule.parse_options_header = lambda value: (value, {})
+sys.modules.setdefault("multipart.multipart", fake_multipart_submodule)
+
+import api.accounts as accounts_module
+import api.ai as ai_module
 from services.account_service import AccountService
 from services.auth_service import AuthService
 from services.storage.json_storage import JSONStorageBackend
@@ -148,6 +206,242 @@ class AuthServiceTests(unittest.TestCase):
             updated = service.update_key(first["id"], {"name": "Alice"}, role="user")
             self.assertIsNotNone(updated)
             self.assertEqual(updated["name"], "Alice")
+
+    def test_user_key_includes_permissions_limits_and_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+
+            item, _ = service.create_key(
+                role="user",
+                name="Quota User",
+                permissions={"chat": True, "image": False},
+                limits={"expires_at": "2026-05-20T12:30:00+00:00", "max_tokens": 1234, "max_images": 8},
+            )
+
+            self.assertEqual(item["permissions"], {"chat": True, "image": False})
+            self.assertEqual(item["limits"]["max_tokens"], 1234)
+            self.assertEqual(item["limits"]["max_images"], 8)
+            self.assertEqual(item["usage"], {"used_tokens": 0, "used_images": 0})
+
+    def test_legacy_user_key_is_normalized_with_unlimited_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            backend = JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json")
+            backend.save_auth_keys([
+                {
+                    "id": "legacy-user",
+                    "name": "Legacy",
+                    "role": "user",
+                    "key_hash": "abc123",
+                    "enabled": True,
+                    "created_at": "2026-05-01T00:00:00+00:00",
+                    "last_used_at": None,
+                }
+            ])
+
+            service = AuthService(backend)
+            item = service.list_keys(role="user")[0]
+
+            self.assertEqual(item["permissions"], {"chat": True, "image": True})
+            self.assertEqual(item["limits"], {"expires_at": None, "max_tokens": None, "max_images": None})
+            self.assertEqual(item["usage"], {"used_tokens": 0, "used_images": 0})
+
+    def test_consume_usage_updates_user_key_counters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            item, _ = service.create_key(role="user", name="Usage User")
+
+            service.consume_tokens(item["id"], 42, role="user")
+            updated = service.consume_images(item["id"], 3, role="user")
+
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated["usage"], {"used_tokens": 42, "used_images": 3})
+
+
+class FakeAuthService:
+    def __init__(self):
+        self.create_calls = []
+        self.items = [
+            {
+                "id": "user-1",
+                "name": "Alice",
+                "role": "user",
+                "enabled": True,
+                "created_at": "2026-05-01T00:00:00+00:00",
+                "last_used_at": None,
+                "permissions": {"chat": True, "image": True},
+                "limits": {"expires_at": None, "max_tokens": None, "max_images": None},
+                "usage": {"used_tokens": 0, "used_images": 0},
+            }
+        ]
+
+    def list_keys(self, role=None):
+        return list(self.items)
+
+    def create_key(self, **kwargs):
+        self.create_calls.append(kwargs)
+        return self.items[0], "sk-test"
+
+    def update_key(self, *_args, **_kwargs):
+        return self.items[0]
+
+    def delete_key(self, *_args, **_kwargs):
+        return True
+
+
+class FakeAccountService:
+    def list_accounts(self):
+        return []
+
+    def get_summary(self):
+        return {"normal_count": 3}
+
+
+class AccountsApiTests(unittest.TestCase):
+    def setUp(self):
+        self.fake_auth = FakeAuthService()
+        self.fake_accounts = FakeAccountService()
+        self.require_admin_patcher = mock.patch.object(accounts_module, "require_admin", return_value={"id": "admin", "role": "admin"})
+        self.auth_patcher = mock.patch.object(accounts_module, "auth_service", self.fake_auth)
+        self.account_patcher = mock.patch.object(accounts_module, "account_service", self.fake_accounts)
+        self.require_admin_patcher.start()
+        self.auth_patcher.start()
+        self.account_patcher.start()
+        self.addCleanup(self.require_admin_patcher.stop)
+        self.addCleanup(self.auth_patcher.stop)
+        self.addCleanup(self.account_patcher.stop)
+        app = FastAPI()
+        app.include_router(accounts_module.create_router())
+        self.client = TestClient(app)
+
+    def test_create_user_key_requires_permissions_and_limits(self):
+        response = self.client.post("/api/auth/users", headers={"Authorization": "Bearer test-auth"}, json={"name": "Alice"})
+
+        self.assertEqual(response.status_code, 422, response.text)
+
+    def test_create_user_key_passes_permissions_and_limits_to_service(self):
+        response = self.client.post(
+            "/api/auth/users",
+            headers={"Authorization": "Bearer test-auth"},
+            json={
+                "name": "Alice",
+                "permissions": {"chat": True, "image": False},
+                "limits": {"expires_at": None, "max_tokens": 5000, "max_images": 12},
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.fake_auth.create_calls[0]["permissions"], {"chat": True, "image": False})
+        self.assertEqual(self.fake_auth.create_calls[0]["limits"], {"expires_at": None, "max_tokens": 5000, "max_images": 12})
+
+    def test_accounts_summary_returns_normal_count(self):
+        response = self.client.get("/api/accounts/summary", headers={"Authorization": "Bearer test-auth"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"normal_count": 3})
+
+
+class AIApiPermissionTests(unittest.TestCase):
+    def setUp(self):
+        self.require_identity_patcher = mock.patch.object(ai_module, "require_identity")
+        self.filter_patcher = mock.patch.object(ai_module, "filter_or_log", new=mock.AsyncMock())
+        self.consume_tokens_patcher = mock.patch.object(ai_module, "consume_identity_tokens")
+        self.chat_handler_patcher = mock.patch.object(
+            ai_module.openai_v1_chat_complete,
+            "handle",
+            return_value={
+                "id": "chatcmpl-test",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7},
+            },
+        )
+        self.require_identity = self.require_identity_patcher.start()
+        self.filter_patcher.start()
+        self.consume_tokens = self.consume_tokens_patcher.start()
+        self.chat_handler_patcher.start()
+        self.addCleanup(self.require_identity_patcher.stop)
+        self.addCleanup(self.filter_patcher.stop)
+        self.addCleanup(self.consume_tokens_patcher.stop)
+        self.addCleanup(self.chat_handler_patcher.stop)
+        app = FastAPI()
+        app.include_router(ai_module.create_router())
+        self.client = TestClient(app)
+
+    def test_chat_only_key_cannot_call_image_generation(self):
+        self.require_identity.return_value = {
+            "id": "user-1",
+            "name": "Chat Only",
+            "role": "user",
+            "permissions": {"chat": True, "image": False},
+            "limits": {"expires_at": None, "max_tokens": None, "max_images": None},
+            "usage": {"used_tokens": 0, "used_images": 0},
+        }
+
+        response = self.client.post(
+            "/v1/images/generations",
+            headers={"Authorization": "Bearer key"},
+            json={"prompt": "cat", "model": "gpt-image-2", "n": 1},
+        )
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.json()["detail"]["error"], "当前密钥没有生图权限")
+
+    def test_image_only_key_cannot_call_chat_completion(self):
+        self.require_identity.return_value = {
+            "id": "user-1",
+            "name": "Image Only",
+            "role": "user",
+            "permissions": {"chat": False, "image": True},
+            "limits": {"expires_at": None, "max_tokens": None, "max_images": None},
+            "usage": {"used_tokens": 0, "used_images": 0},
+        }
+
+        response = self.client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer key"},
+            json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.json()["detail"]["error"], "当前密钥没有对话权限")
+
+    def test_token_exhausted_key_is_rejected(self):
+        self.require_identity.return_value = {
+            "id": "user-1",
+            "name": "Exhausted",
+            "role": "user",
+            "permissions": {"chat": True, "image": True},
+            "limits": {"expires_at": None, "max_tokens": 5, "max_images": None},
+            "usage": {"used_tokens": 5, "used_images": 0},
+        }
+
+        response = self.client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer key"},
+            json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.json()["detail"]["error"], "当前密钥的 tokens 已用完")
+
+    def test_chat_completion_consumes_total_tokens_after_success(self):
+        identity = {
+            "id": "user-1",
+            "name": "Normal",
+            "role": "user",
+            "permissions": {"chat": True, "image": True},
+            "limits": {"expires_at": None, "max_tokens": 100, "max_images": None},
+            "usage": {"used_tokens": 1, "used_images": 0},
+        }
+        self.require_identity.return_value = identity
+
+        response = self.client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer key"},
+            json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.consume_tokens.assert_called_once_with(identity, 7)
 
 
 if __name__ == "__main__":

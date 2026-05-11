@@ -50,6 +50,10 @@ type AccountUpdateResponse = {
   items: Account[];
 };
 
+type AccountSummaryResponse = {
+  normal_count: number;
+};
+
 export type SettingsConfig = {
   proxy: string;
   base_url?: string;
@@ -235,6 +239,22 @@ export type LoginResponse = {
   name: string;
 };
 
+export type UserKeyPermissions = {
+  chat: boolean;
+  image: boolean;
+};
+
+export type UserKeyLimits = {
+  expires_at: string | null;
+  max_tokens: number | null;
+  max_images: number | null;
+};
+
+export type UserKeyUsage = {
+  used_tokens: number;
+  used_images: number;
+};
+
 export type UserKey = {
   id: string;
   name: string;
@@ -242,6 +262,9 @@ export type UserKey = {
   enabled: boolean;
   created_at: string | null;
   last_used_at: string | null;
+  permissions: UserKeyPermissions;
+  limits: UserKeyLimits;
+  usage: UserKeyUsage;
 };
 
 export type RegisterConfig = {
@@ -296,6 +319,10 @@ export async function login(authKey: string) {
 
 export async function fetchAccounts() {
   return httpRequest<AccountListResponse>("/api/accounts");
+}
+
+export async function fetchAccountSummary() {
+  return httpRequest<AccountSummaryResponse>("/api/accounts/summary");
 }
 
 export async function createAccounts(tokens: string[]) {
@@ -559,14 +586,27 @@ export async function fetchUserKeys() {
   return httpRequest<{ items: UserKey[] }>("/api/auth/users");
 }
 
-export async function createUserKey(name: string) {
+export async function createUserKey(body: {
+  name: string;
+  permissions: UserKeyPermissions;
+  limits: UserKeyLimits;
+}) {
   return httpRequest<{ item: UserKey; key: string; items: UserKey[] }>("/api/auth/users", {
     method: "POST",
-    body: { name },
+    body,
   });
 }
 
-export async function updateUserKey(keyId: string, updates: { enabled?: boolean; name?: string; key?: string }) {
+export async function updateUserKey(
+  keyId: string,
+  updates: {
+    enabled?: boolean;
+    name?: string;
+    key?: string;
+    permissions?: UserKeyPermissions;
+    limits?: UserKeyLimits;
+  },
+) {
   return httpRequest<{ item: UserKey; items: UserKey[] }>(`/api/auth/users/${keyId}`, {
     method: "POST",
     body: updates,

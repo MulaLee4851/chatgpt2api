@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
@@ -14,7 +16,7 @@ class ImageGenerationTaskRequest(BaseModel):
     client_task_id: str = Field(..., min_length=1)
     prompt: str = Field(..., min_length=1)
     model: str = "gpt-image-2"
-    size: str | None = None
+    size: Optional[str] = None
 
 
 def _parse_task_ids(value: str) -> list[str]:
@@ -35,7 +37,7 @@ def create_router() -> APIRouter:
     @router.get("/api/image-tasks")
     async def list_image_tasks(
         ids: str = Query(default=""),
-        authorization: str | None = Header(default=None),
+        authorization: Optional[str] = Header(default=None),
     ):
         identity = require_identity(authorization)
         return await run_in_threadpool(image_task_service.list_tasks, identity, _parse_task_ids(ids))
@@ -44,7 +46,7 @@ def create_router() -> APIRouter:
     async def create_generation_task(
         body: ImageGenerationTaskRequest,
         request: Request,
-        authorization: str | None = Header(default=None),
+        authorization: Optional[str] = Header(default=None),
     ):
         identity = require_identity(authorization)
         await filter_or_log(LoggedCall(identity, "/api/image-tasks/generations", body.model, "文生图任务", request_text=body.prompt), body.prompt)
@@ -64,13 +66,13 @@ def create_router() -> APIRouter:
     @router.post("/api/image-tasks/edits")
     async def create_edit_task(
         request: Request,
-        authorization: str | None = Header(default=None),
-        image: list[UploadFile] | None = File(default=None),
-        image_list: list[UploadFile] | None = File(default=None, alias="image[]"),
+        authorization: Optional[str] = Header(default=None),
+        image: Optional[list[UploadFile]] = File(default=None),
+        image_list: Optional[list[UploadFile]] = File(default=None, alias="image[]"),
         client_task_id: str = Form(...),
         prompt: str = Form(...),
         model: str = Form(default="gpt-image-2"),
-        size: str | None = Form(default=None),
+        size: Optional[str] = Form(default=None),
     ):
         identity = require_identity(authorization)
         await filter_or_log(LoggedCall(identity, "/api/image-tasks/edits", model, "图生图任务", request_text=prompt), prompt)

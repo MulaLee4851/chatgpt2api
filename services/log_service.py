@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -182,7 +182,15 @@ class LoggedCall:
     started: float = field(default_factory=time.time)
     request_text: str = ""
 
-    async def run(self, handler, *args, sse: str = "openai"):
+    async def run(
+        self,
+        handler,
+        *args,
+        sse: str = "openai",
+        on_result: Callable[[dict[str, Any]], None] | None = None,
+        on_stream_item: Callable[[dict[str, Any]], None] | None = None,
+        on_stream_finish: Callable[[], None] | None = None,
+    ):
         from services.protocol.conversation import ImageGenerationError
 
         try:
@@ -198,6 +206,8 @@ class LoggedCall:
             raise HTTPException(status_code=502, detail={"error": str(exc)}) from exc
 
         if isinstance(result, dict):
+            if on_result is not None:
+                on_result(result)
             self.log("调用完成", result)
             return result
 
@@ -214,16 +224,28 @@ class LoggedCall:
             self.log("调用失败", status="failed", error=str(exc))
             raise HTTPException(status_code=502, detail={"error": str(exc)}) from exc
         if not has_first:
+            if on_stream_finish is not None:
+                on_stream_finish()
             self.log("流式调用结束")
             return StreamingResponse(sender(()), media_type="text/event-stream")
-        return StreamingResponse(sender(self.stream(itertools.chain([first], result))), media_type="text/event-stream")
+        return StreamingResponse(
+            sender(self.stream(itertools.chain([first], result), on_stream_item=on_stream_item, on_stream_finish=on_stream_finish)),
+            media_type="text/event-stream",
+        )
 
-    def stream(self, items):
+    def stream(
+        self,
+        items,
+        on_stream_item: Callable[[dict[str, Any]], None] | None = None,
+        on_stream_finish: Callable[[], None] | None = None,
+    ):
         urls: list[str] = []
         failed = False
         try:
             for item in items:
                 urls.extend(_collect_urls(item))
+                if on_stream_item is not None:
+                    on_stream_item(item)
                 yield item
         except Exception as exc:
             failed = True
@@ -231,6 +253,8 @@ class LoggedCall:
             raise
         finally:
             if not failed:
+                if on_stream_finish is not None:
+                    on_stream_finish()
                 self.log("流式调用结束", urls=urls)
 
     def log(self, suffix: str, result: object = None, status: str = "success", error: str = "",

@@ -1,10 +1,50 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
+
+fake_database_storage = types.ModuleType("services.storage.database_storage")
+fake_database_storage.DatabaseStorageBackend = object
+sys.modules.setdefault("services.storage.database_storage", fake_database_storage)
+
+fake_git_storage = types.ModuleType("services.storage.git_storage")
+fake_git_storage.GitStorageBackend = object
+sys.modules.setdefault("services.storage.git_storage", fake_git_storage)
+
+fake_pybase64 = types.ModuleType("pybase64")
+fake_pybase64.b64encode = lambda data, altchars=None: data
+fake_pybase64.b64decode = lambda data, altchars=None, validate=False: data
+sys.modules.setdefault("pybase64", fake_pybase64)
+
+fake_pow = types.ModuleType("utils.pow")
+fake_pow.build_legacy_requirements_token = lambda *args, **kwargs: ""
+fake_pow.build_proof_token = lambda *args, **kwargs: ""
+fake_pow.parse_pow_resources = lambda *args, **kwargs: []
+sys.modules.setdefault("utils.pow", fake_pow)
+
+fake_openai_backend_api = types.ModuleType("services.openai_backend_api")
+
+class FakeOpenAIBackendAPI:
+    def __init__(self, *args, **kwargs):
+        self.access_token = kwargs.get("access_token", "")
+
+    def stream_conversation(self, *args, **kwargs):
+        return iter(())
+
+    def get_user_info(self):
+        return {}
+
+class FakeInvalidAccessTokenError(Exception):
+    pass
+
+fake_openai_backend_api.OpenAIBackendAPI = FakeOpenAIBackendAPI
+fake_openai_backend_api.InvalidAccessTokenError = FakeInvalidAccessTokenError
+sys.modules.setdefault("services.openai_backend_api", fake_openai_backend_api)
 
 from services.image_task_service import ImageTaskService
 
@@ -29,8 +69,8 @@ class ImageTaskServiceTests(unittest.TestCase):
     def make_service(self, path: Path, handler=None) -> ImageTaskService:
         return ImageTaskService(
             path,
-            generation_handler=handler or (lambda _payload: {"data": [{"url": "http://example.test/image.png"}]}),
-            edit_handler=handler or (lambda _payload: {"data": [{"url": "http://example.test/edit.png"}]}),
+            generation_handler=handler or (lambda _payload: {"data": [{"b64_json": "ZmFrZQ=="}]}),
+            edit_handler=handler or (lambda _payload: {"data": [{"b64_json": "ZWRpdA=="}]}),
             retention_days_getter=lambda: 30,
         )
 
@@ -42,7 +82,7 @@ class ImageTaskServiceTests(unittest.TestCase):
                 nonlocal calls
                 calls += 1
                 time.sleep(0.05)
-                return {"data": [{"url": "http://example.test/image.png"}]}
+                return {"data": [{"b64_json": "ZmFrZQ=="}]}
 
             service = self.make_service(Path(tmp_dir) / "image_tasks.json", handler)
             first = service.submit_generation(
@@ -65,7 +105,7 @@ class ImageTaskServiceTests(unittest.TestCase):
             self.assertEqual(first["id"], "task-1")
             self.assertEqual(second["id"], "task-1")
             task = wait_for_task(service, OWNER, "task-1", "success")
-            self.assertEqual(task["data"][0]["url"], "http://example.test/image.png")
+            self.assertEqual(task["data"][0]["b64_json"], "ZmFrZQ==")
             self.assertEqual(calls, 1)
 
     def test_different_owner_cannot_query_task(self):
@@ -105,7 +145,7 @@ class ImageTaskServiceTests(unittest.TestCase):
 
             self.assertEqual(result["missing_ids"], [])
             self.assertEqual(result["items"][0]["status"], "success")
-            self.assertEqual(result["items"][0]["data"][0]["url"], "http://example.test/image.png")
+            self.assertEqual(result["items"][0]["data"][0]["b64_json"], "ZmFrZQ==")
 
     def test_startup_marks_unfinished_tasks_as_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

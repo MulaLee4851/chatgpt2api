@@ -183,6 +183,11 @@ class AccountService:
         with self._lock:
             return [dict(item) for item in self._accounts.values()]
 
+    def get_summary(self) -> dict[str, int]:
+        with self._lock:
+            normal_count = sum(1 for item in self._accounts.values() if item.get("status") == "正常")
+            return {"normal_count": normal_count}
+
     def list_limited_tokens(self) -> list[str]:
         with self._lock:
             return [

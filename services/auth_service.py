@@ -37,6 +37,68 @@ class AuthService:
     def _default_name(role: object) -> str:
         return "管理员密钥" if str(role or "").strip().lower() == "admin" else "普通用户"
 
+    @staticmethod
+    def _default_permissions() -> dict[str, bool]:
+        return {"chat": True, "image": True}
+
+    @staticmethod
+    def _default_limits() -> dict[str, object]:
+        return {"expires_at": None, "max_tokens": None, "max_images": None}
+
+    @staticmethod
+    def _default_usage() -> dict[str, int]:
+        return {"used_tokens": 0, "used_images": 0}
+
+    def _normalize_optional_nonnegative_int(self, value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return max(0, int(value))
+        except Exception:
+            return None
+
+    def _normalize_expires_at(self, value: object) -> str | None:
+        text = self._clean(value)
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+
+    def _normalize_permissions(self, raw: object) -> dict[str, bool]:
+        defaults = self._default_permissions()
+        if not isinstance(raw, dict):
+            return defaults
+        return {
+            "chat": bool(raw.get("chat", defaults["chat"])),
+            "image": bool(raw.get("image", defaults["image"])),
+        }
+
+    def _normalize_limits(self, raw: object) -> dict[str, object]:
+        defaults = self._default_limits()
+        if not isinstance(raw, dict):
+            return defaults
+        return {
+            "expires_at": self._normalize_expires_at(raw.get("expires_at")),
+            "max_tokens": self._normalize_optional_nonnegative_int(raw.get("max_tokens")),
+            "max_images": self._normalize_optional_nonnegative_int(raw.get("max_images")),
+        }
+
+    def _normalize_usage(self, raw: object) -> dict[str, int]:
+        defaults = self._default_usage()
+        if not isinstance(raw, dict):
+            return defaults
+        used_tokens = self._normalize_optional_nonnegative_int(raw.get("used_tokens"))
+        used_images = self._normalize_optional_nonnegative_int(raw.get("used_images"))
+        return {
+            "used_tokens": defaults["used_tokens"] if used_tokens is None else used_tokens,
+            "used_images": defaults["used_images"] if used_images is None else used_images,
+        }
+
     def _normalize_item(self, raw: object) -> dict[str, object] | None:
         if not isinstance(raw, dict):
             return None
@@ -58,6 +120,9 @@ class AuthService:
             "enabled": bool(raw.get("enabled", True)),
             "created_at": created_at,
             "last_used_at": last_used_at,
+            "permissions": self._normalize_permissions(raw.get("permissions")),
+            "limits": self._normalize_limits(raw.get("limits")),
+            "usage": self._normalize_usage(raw.get("usage")),
         }
 
     def _load(self) -> list[dict[str, object]]:
@@ -84,6 +149,9 @@ class AuthService:
             "enabled": bool(item.get("enabled", True)),
             "created_at": item.get("created_at"),
             "last_used_at": item.get("last_used_at"),
+            "permissions": dict(item.get("permissions") or {}),
+            "limits": dict(item.get("limits") or {}),
+            "usage": dict(item.get("usage") or {}),
         }
 
     def list_keys(self, role: AuthRole | None = None) -> list[dict[str, object]]:
@@ -147,7 +215,14 @@ class AuthService:
             raise ValueError("这个名称已经在使用中了，换一个更容易区分的名称吧")
         return candidate
 
-    def create_key(self, *, role: AuthRole, name: str = "") -> tuple[dict[str, object], str]:
+    def create_key(
+        self,
+        *,
+        role: AuthRole,
+        name: str = "",
+        permissions: dict[str, object] | None = None,
+        limits: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], str]:
         with self._lock:
             self._reload_locked()
             normalized_name = self._build_name_locked(name, role=role)
@@ -166,6 +241,9 @@ class AuthService:
                 "enabled": True,
                 "created_at": _now_iso(),
                 "last_used_at": None,
+                "permissions": self._normalize_permissions(permissions),
+                "limits": self._normalize_limits(limits),
+                "usage": self._default_usage(),
             }
             self._items.append(item)
             self._save()
@@ -200,9 +278,18 @@ class AuthService:
                     next_item["enabled"] = bool(updates.get("enabled"))
                 if "key" in updates and updates.get("key") is not None:
                     next_item["key_hash"] = self._build_key_hash_locked(str(updates.get("key") or ""), exclude_id=normalized_id)
-                self._items[index] = next_item
+                if "permissions" in updates and updates.get("permissions") is not None:
+                    next_item["permissions"] = self._normalize_permissions(updates.get("permissions"))
+                if "limits" in updates and updates.get("limits") is not None:
+                    next_item["limits"] = self._normalize_limits(updates.get("limits"))
+                if "usage" in updates and updates.get("usage") is not None:
+                    next_item["usage"] = self._normalize_usage(updates.get("usage"))
+                normalized = self._normalize_item(next_item)
+                if normalized is None:
+                    return None
+                self._items[index] = normalized
                 self._save()
-                return self._public_item(next_item)
+                return self._public_item(normalized)
         return None
 
     def delete_key(self, key_id: str, *, role: AuthRole | None = None) -> bool:
@@ -237,8 +324,11 @@ class AuthService:
                 next_item = dict(item)
                 now = datetime.now(timezone.utc)
                 next_item["last_used_at"] = now.isoformat()
-                self._items[index] = next_item
-                item_id = self._clean(next_item.get("id"))
+                normalized = self._normalize_item(next_item)
+                if normalized is None:
+                    continue
+                self._items[index] = normalized
+                item_id = self._clean(normalized.get("id"))
                 last_flush_at = self._last_used_flush_at.get(item_id)
                 if last_flush_at is None or (now - last_flush_at).total_seconds() >= 60:
                     try:
@@ -246,8 +336,41 @@ class AuthService:
                         self._last_used_flush_at[item_id] = now
                     except Exception:
                         pass
-                return self._public_item(next_item)
+                return self._public_item(normalized)
         return None
+
+    def _update_usage_locked(self, key_id: str, *, used_tokens: int = 0, used_images: int = 0, role: AuthRole | None = None) -> dict[str, object] | None:
+        normalized_id = self._clean(key_id)
+        if not normalized_id:
+            return None
+        for index, item in enumerate(self._items):
+            if item.get("id") != normalized_id:
+                continue
+            if role is not None and item.get("role") != role:
+                return None
+            next_item = dict(item)
+            current_usage = self._normalize_usage(next_item.get("usage"))
+            next_item["usage"] = {
+                "used_tokens": current_usage["used_tokens"] + max(0, int(used_tokens or 0)),
+                "used_images": current_usage["used_images"] + max(0, int(used_images or 0)),
+            }
+            normalized = self._normalize_item(next_item)
+            if normalized is None:
+                return None
+            self._items[index] = normalized
+            self._save()
+            return self._public_item(normalized)
+        return None
+
+    def consume_tokens(self, key_id: str, tokens: int, *, role: AuthRole | None = None) -> dict[str, object] | None:
+        with self._lock:
+            self._reload_locked()
+            return self._update_usage_locked(key_id, used_tokens=tokens, role=role)
+
+    def consume_images(self, key_id: str, images: int, *, role: AuthRole | None = None) -> dict[str, object] | None:
+        with self._lock:
+            self._reload_locked()
+            return self._update_usage_locked(key_id, used_images=images, role=role)
 
 
 auth_service = AuthService(config.get_storage_backend())
