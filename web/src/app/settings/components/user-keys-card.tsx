@@ -162,16 +162,46 @@ function formatPermissions(permissions: UserKeyPermissions) {
   return labels.length > 0 ? labels.join(" / ") : "未开启";
 }
 
+function formatExpiration(expiresAt: string | null) {
+  if (!expiresAt) {
+    return "时长无限";
+  }
+  const expiresAtDate = new Date(expiresAt);
+  if (!Number.isNaN(expiresAtDate.getTime()) && expiresAtDate.getTime() <= Date.now()) {
+    return "已过期";
+  }
+  return `时效至 ${formatDateTime(expiresAt)}`;
+}
+
+function formatQuotaLimit(label: string, max: number | null, unlimitedLabel: string) {
+  return max == null ? unlimitedLabel : `${label}上限 ${max}`;
+}
+
+function formatQuotaUsage(label: string, used: number, max: number | null) {
+  if (max == null) {
+    return `${label} 已用 ${used}`;
+  }
+  const normalizedMax = Math.max(0, max);
+  const normalizedUsed = Math.max(0, used);
+  if (normalizedUsed >= normalizedMax) {
+    return `${label} ${normalizedUsed} / ${normalizedMax}（已耗尽）`;
+  }
+  return `${label} ${normalizedUsed} / ${normalizedMax}（剩余 ${normalizedMax - normalizedUsed}）`;
+}
+
 function formatLimits(limits: UserKeyLimits) {
   return [
-    limits.expires_at ? `时效至 ${formatDateTime(limits.expires_at)}` : "时长无限",
-    limits.max_tokens == null ? "Tokens 无限" : `Tokens ${limits.max_tokens}`,
-    limits.max_images == null ? "图片次数无限" : `图片次数 ${limits.max_images}`,
+    formatExpiration(limits.expires_at),
+    formatQuotaLimit("Tokens ", limits.max_tokens, "Tokens 无限"),
+    formatQuotaLimit("图片", limits.max_images, "图片次数无限"),
   ].join(" · ");
 }
 
 function formatUsage(item: UserKey) {
-  return `已用 Tokens ${item.usage.used_tokens} · 已生图 ${item.usage.used_images}`;
+  return [
+    formatQuotaUsage("Tokens", item.usage.used_tokens, item.limits.max_tokens),
+    formatQuotaUsage("图片", item.usage.used_images, item.limits.max_images),
+  ].join(" · ");
 }
 
 export function UserKeysCard() {
