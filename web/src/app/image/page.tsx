@@ -145,7 +145,7 @@ async function fetchImageAsFile(url: string, fileName: string) {
   return new File([blob], fileName, { type: blob.type || "image/png" });
 }
 
-async async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: string) {
+async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: string) {
   const direct = buildReferenceImageFromResult(image, fileName);
   if (direct) {
     return {
