@@ -640,7 +640,7 @@ export function ImageTemplatesCard() {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-stone-900">变量配置</h3>
-                  <p className="text-xs text-stone-500">变量 key 会对应正向 Prompt 里的 {{key}} 占位符。</p>
+                  <p className="text-xs text-stone-500">变量 key 会对应正向 Prompt 里的 {"{{key}}"} 占位符。</p>
                 </div>
                 <Button type="button" variant="outline" className="rounded-xl" onClick={() => setForm((current) => ({ ...current, placeholders: [...current.placeholders, createPlaceholder(current.placeholders.length)] }))}>
                   <Plus className="mr-2 size-4" />新增变量
