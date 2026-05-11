@@ -189,6 +189,11 @@ async function buildReferenceImageFromTemplate(url: string, fileName: string) {
   };
 }
 
+function getImageErrorMessage(value: string | null | undefined) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || "生成失败";
+}
+
 function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage {
   if (task.status === "success") {
     const first = task.data?.[0];
@@ -216,7 +221,7 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       ...image,
       taskId: task.id,
       status: "error",
-      error: task.error || "生成失败",
+      error: getImageErrorMessage(task.error),
     };
   }
 
@@ -245,13 +250,23 @@ function sortImageConversations(conversations: ImageConversation[]) {
 
 function deriveTurnStatus(turn: ImageTurn): Pick<ImageTurn, "status" | "error"> {
   const loadingCount = turn.images.filter((image) => image.status === "loading").length;
-  const failedCount = turn.images.filter((image) => image.status === "error").length;
+  const failedImages = turn.images.filter((image) => image.status === "error");
+  const failedCount = failedImages.length;
   const successCount = turn.images.filter((image) => image.status === "success").length;
   if (loadingCount > 0) {
     return { status: turn.status === "queued" ? "queued" : "generating", error: undefined };
   }
   if (failedCount > 0) {
-    return { status: "error", error: `其中 ${failedCount} 张未成功生成` };
+    const uniqueErrors = Array.from(
+      new Set(
+        failedImages
+          .map((image) => image.error?.trim())
+          .filter((error): error is string => Boolean(error)),
+      ),
+    );
+    const primaryError = uniqueErrors[0] || "生成失败";
+    const suffix = failedCount > 1 ? `（共 ${failedCount} 张失败）` : "";
+    return { status: "error", error: `${primaryError}${suffix}` };
   }
   if (successCount > 0) {
     return { status: "success", error: undefined };

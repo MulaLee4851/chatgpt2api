@@ -122,111 +122,115 @@ export function ImageComposer({
           }}
         />
 
-        {selectedTemplate ? (
-          <div className="mb-2 rounded-3xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-600 sm:mb-3 sm:px-5 sm:py-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-stone-950 px-2.5 py-1 text-[11px] font-medium text-white sm:text-xs">{selectedTemplate.mode === "edit" ? "图生图模板" : "文生图模板"}</span>
-                  <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[11px] font-medium text-stone-600 sm:text-xs">v{selectedTemplate.version}</span>
-                  {selectedTemplate.tags.map((tag) => (
-                    <span key={tag} className="rounded-full bg-stone-100 px-2.5 py-1 text-[11px] font-medium text-stone-600 sm:text-xs">#{tag}</span>
-                  ))}
-                </div>
-                <div className="text-sm font-medium text-stone-950 sm:text-base">{selectedTemplate.name}</div>
-                <div className="text-xs leading-5 text-stone-500 sm:text-sm">{selectedTemplate.description || "已应用模板配置"}</div>
-                {requiredOriginalReference ? <div className="text-xs text-amber-700 sm:text-sm">提交前还需要上传待处理原图</div> : null}
-              </div>
-              <div className="flex items-center gap-2">
-                <Button type="button" variant="outline" className="rounded-full border-stone-200" onClick={onOpenTemplatePicker}>
-                  更换模板
-                </Button>
-                <Button type="button" variant="ghost" className="rounded-full text-stone-500 hover:text-stone-900" onClick={onClearTemplate}>
-                  取消模板
-                </Button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {selectedTemplate?.placeholders.length ? (
-          <div className="mb-2 grid gap-2 px-1 sm:mb-3 sm:grid-cols-2 sm:px-0">
-            {selectedTemplate.placeholders.map((placeholder) => {
-              const value = templateFieldValues[placeholder.key] ?? "";
-              return (
-                <div key={placeholder.key} className={cn("space-y-1.5", placeholder.type === "textarea" && "sm:col-span-2")}>
-                  <div className="flex items-center gap-2 px-1 text-xs text-stone-500 sm:px-0 sm:text-sm">
-                    <span className="font-medium text-stone-700">{placeholder.label || placeholder.key}</span>
-                    {placeholder.required ? <span className="text-rose-500">*</span> : null}
+        {selectedTemplate || referenceImages.length > 0 ? (
+          <div className="hide-scrollbar mb-2 max-h-[min(36dvh,320px)] overflow-y-auto overscroll-contain px-1 sm:mb-3 sm:px-0">
+            {selectedTemplate ? (
+              <div className="rounded-3xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-600 sm:px-5 sm:py-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-stone-950 px-2.5 py-1 text-[11px] font-medium text-white sm:text-xs">{selectedTemplate.mode === "edit" ? "图生图模板" : "文生图模板"}</span>
+                      <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[11px] font-medium text-stone-600 sm:text-xs">v{selectedTemplate.version}</span>
+                      {selectedTemplate.tags.map((tag) => (
+                        <span key={tag} className="rounded-full bg-stone-100 px-2.5 py-1 text-[11px] font-medium text-stone-600 sm:text-xs">#{tag}</span>
+                      ))}
+                    </div>
+                    <div className="text-sm font-medium text-stone-950 sm:text-base">{selectedTemplate.name}</div>
+                    <div className="text-xs leading-5 text-stone-500 sm:text-sm">{selectedTemplate.description || "已应用模板配置"}</div>
+                    {requiredOriginalReference ? <div className="text-xs text-amber-700 sm:text-sm">提交前还需要上传待处理原图</div> : null}
                   </div>
-                  {placeholder.type === "textarea" ? (
-                    <Textarea
-                      value={value}
-                      onChange={(event) => onTemplateFieldValueChange(placeholder.key, event.target.value)}
-                      placeholder={placeholder.help || `填写${placeholder.label || placeholder.key}`}
-                      className="min-h-[92px] rounded-2xl border-stone-200 bg-white"
-                    />
-                  ) : placeholder.type === "select" ? (
-                    <Select value={value || "__empty__"} onValueChange={(next) => onTemplateFieldValueChange(placeholder.key, next === "__empty__" ? "" : next)}>
-                      <SelectTrigger className="h-11 rounded-2xl border-stone-200 bg-white text-sm shadow-none">
-                        <SelectValue placeholder={placeholder.help || `选择${placeholder.label || placeholder.key}`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__empty__">未选择</SelectItem>
-                        {(placeholder.validation.options || []).map((option) => (
-                          <SelectItem key={option} value={option}>{option}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input
-                      type={placeholder.type === "number" ? "number" : "text"}
-                      inputMode={placeholder.type === "number" ? "numeric" : undefined}
-                      value={value}
-                      onChange={(event) => onTemplateFieldValueChange(placeholder.key, event.target.value)}
-                      placeholder={placeholder.help || `填写${placeholder.label || placeholder.key}`}
-                      className="h-11 rounded-2xl border-stone-200 bg-white"
-                    />
-                  )}
-                  {placeholder.help ? <div className="px-1 text-[11px] leading-5 text-stone-400 sm:px-0 sm:text-xs">{placeholder.help}</div> : null}
+                  <div className="flex items-center gap-2">
+                    <Button type="button" variant="outline" className="rounded-full border-stone-200" onClick={onOpenTemplatePicker}>
+                      更换模板
+                    </Button>
+                    <Button type="button" variant="ghost" className="rounded-full text-stone-500 hover:text-stone-900" onClick={onClearTemplate}>
+                      取消模板
+                    </Button>
+                  </div>
                 </div>
-              );
-            })}
-          </div>
-        ) : null}
-
-        {referenceImages.length > 0 ? (
-          <div className="mb-2 flex gap-2 overflow-x-auto px-1 pb-1 sm:mb-3 sm:flex-wrap sm:overflow-visible sm:pb-0">
-            {referenceImages.map((image, index) => (
-              <div key={`${image.name}-${index}`} className="relative size-14 shrink-0 sm:size-16">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLightboxIndex(index);
-                    setLightboxOpen(true);
-                  }}
-                  className="group size-14 overflow-hidden rounded-2xl border border-stone-200 bg-stone-50 transition hover:border-stone-300 sm:size-16"
-                  aria-label={`预览参考图 ${image.name || index + 1}`}
-                >
-                  <img
-                    src={image.dataUrl}
-                    alt={image.name || `参考图 ${index + 1}`}
-                    className="h-full w-full object-cover"
-                  />
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRemoveReferenceImage(index);
-                  }}
-                  className="absolute -right-1 -top-1 inline-flex size-5 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-800"
-                  aria-label={`移除参考图 ${image.name || index + 1}`}
-                >
-                  <X className="size-3" />
-                </button>
               </div>
-            ))}
+            ) : null}
+
+            {selectedTemplate?.placeholders.length ? (
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                {selectedTemplate.placeholders.map((placeholder) => {
+                  const value = templateFieldValues[placeholder.key] ?? "";
+                  return (
+                    <div key={placeholder.key} className={cn("space-y-1.5", placeholder.type === "textarea" && "sm:col-span-2")}>
+                      <div className="flex items-center gap-2 px-1 text-xs text-stone-500 sm:px-0 sm:text-sm">
+                        <span className="font-medium text-stone-700">{placeholder.label || placeholder.key}</span>
+                        {placeholder.required ? <span className="text-rose-500">*</span> : null}
+                      </div>
+                      {placeholder.type === "textarea" ? (
+                        <Textarea
+                          value={value}
+                          onChange={(event) => onTemplateFieldValueChange(placeholder.key, event.target.value)}
+                          placeholder={placeholder.help || `填写${placeholder.label || placeholder.key}`}
+                          className="min-h-[92px] rounded-2xl border-stone-200 bg-white"
+                        />
+                      ) : placeholder.type === "select" ? (
+                        <Select value={value || "__empty__"} onValueChange={(next) => onTemplateFieldValueChange(placeholder.key, next === "__empty__" ? "" : next)}>
+                          <SelectTrigger className="h-11 rounded-2xl border-stone-200 bg-white text-sm shadow-none">
+                            <SelectValue placeholder={placeholder.help || `选择${placeholder.label || placeholder.key}`} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__empty__">未选择</SelectItem>
+                            {(placeholder.validation.options || []).map((option) => (
+                              <SelectItem key={option} value={option}>{option}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input
+                          type={placeholder.type === "number" ? "number" : "text"}
+                          inputMode={placeholder.type === "number" ? "numeric" : undefined}
+                          value={value}
+                          onChange={(event) => onTemplateFieldValueChange(placeholder.key, event.target.value)}
+                          placeholder={placeholder.help || `填写${placeholder.label || placeholder.key}`}
+                          className="h-11 rounded-2xl border-stone-200 bg-white"
+                        />
+                      )}
+                      {placeholder.help ? <div className="px-1 text-[11px] leading-5 text-stone-400 sm:px-0 sm:text-xs">{placeholder.help}</div> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            {referenceImages.length > 0 ? (
+              <div className="mt-2 flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
+                {referenceImages.map((image, index) => (
+                  <div key={`${image.name}-${index}`} className="relative size-14 shrink-0 sm:size-16">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLightboxIndex(index);
+                        setLightboxOpen(true);
+                      }}
+                      className="group size-14 overflow-hidden rounded-2xl border border-stone-200 bg-stone-50 transition hover:border-stone-300 sm:size-16"
+                      aria-label={`预览参考图 ${image.name || index + 1}`}
+                    >
+                      <img
+                        src={image.dataUrl}
+                        alt={image.name || `参考图 ${index + 1}`}
+                        className="h-full w-full object-cover"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onRemoveReferenceImage(index);
+                      }}
+                      className="absolute -right-1 -top-1 inline-flex size-5 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-800"
+                      aria-label={`移除参考图 ${image.name || index + 1}`}
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
