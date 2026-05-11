@@ -258,12 +258,68 @@ export type LoginResponse = {
   usage: UserKeyUsage;
 };
 
+export type ImageTemplatePrompts = {
+  positive: string;
+  negative: string;
+};
+
+export type ImageTemplateDefaults = {
+  count: number;
+  size: string;
+};
+
+export type ImageTemplatePlaceholderValidation = {
+  min_length?: number | null;
+  max_length?: number | null;
+  min?: number | null;
+  max?: number | null;
+  regex?: string;
+  options?: string[];
+};
+
+export type ImageTemplatePlaceholder = {
+  key: string;
+  label: string;
+  type: "text" | "textarea" | "number" | "select";
+  default_value: string;
+  required: boolean;
+  help: string;
+  validation: ImageTemplatePlaceholderValidation;
+  order?: number;
+};
+
+export type ImageTemplateReference = {
+  key: string;
+  label: string;
+  type: "reference" | "original";
+  required: boolean;
+  weight: number;
+  help: string;
+  asset_rel: string | null;
+  asset_url?: string | null;
+  order?: number;
+};
+
 export type ImageTemplate = {
   id: string;
   name: string;
   description: string;
   mode: "generate" | "edit";
+  prompts: ImageTemplatePrompts;
+  defaults: ImageTemplateDefaults;
+  placeholders: ImageTemplatePlaceholder[];
+  references: ImageTemplateReference[];
+  tags: string[];
+  status: "active" | "draft" | "archived";
+  version: string;
+  cover_image_rel: string | null;
+  cover_image_url: string | null;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
   prompt_template: string;
+  negative_prompt: string;
   default_count: number;
   default_size: string;
   requires_placeholder: boolean;
@@ -274,21 +330,19 @@ export type ImageTemplate = {
   original_image_rel: string | null;
   original_image_url: string | null;
   enabled: boolean;
-  created_at: string;
-  updated_at: string;
 };
 
 export type ImageTemplatePayload = {
   name: string;
   description: string;
   mode: "generate" | "edit";
-  prompt_template: string;
-  default_count: number;
-  default_size: string;
-  requires_placeholder: boolean;
-  placeholder_token: string;
-  requires_user_source_image: boolean;
-  enabled: boolean;
+  prompts: ImageTemplatePrompts;
+  defaults: ImageTemplateDefaults;
+  placeholders: ImageTemplatePlaceholder[];
+  references: ImageTemplateReference[];
+  tags: string[];
+  status: "active" | "draft" | "archived";
+  version: string;
 };
 
 export type UserKey = {
@@ -512,7 +566,7 @@ export async function deleteImageTemplate(templateId: string) {
   });
 }
 
-export async function uploadImageTemplateAsset(templateId: string, kind: "reference" | "original", file: File) {
+export async function uploadImageTemplateAsset(templateId: string, kind: "reference" | "original" | "cover", file: File) {
   const formData = new FormData();
   formData.append("file", file);
   return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/assets/${kind}`, {
@@ -521,8 +575,23 @@ export async function uploadImageTemplateAsset(templateId: string, kind: "refere
   });
 }
 
-export async function deleteImageTemplateAsset(templateId: string, kind: "reference" | "original") {
+export async function deleteImageTemplateAsset(templateId: string, kind: "reference" | "original" | "cover") {
   return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/assets/${kind}`, {
+    method: "DELETE",
+  });
+}
+
+export async function uploadImageTemplateReferenceAsset(templateId: string, referenceKey: string, file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/references/${encodeURIComponent(referenceKey)}/asset`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function deleteImageTemplateReferenceAsset(templateId: string, referenceKey: string) {
+  return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/references/${encodeURIComponent(referenceKey)}/asset`, {
     method: "DELETE",
   });
 }

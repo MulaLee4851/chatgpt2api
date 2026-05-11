@@ -1,5 +1,5 @@
 "use client";
-import { ArrowUp, Check, ChevronDown, ImagePlus, LoaderCircle, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, ImagePlus, LoaderCircle, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type RefObject } from "react";
 
 import { ImageLightbox } from "@/components/image-lightbox";
@@ -18,9 +18,8 @@ type ImageComposerProps = {
   availableQuota: string;
   activeTaskCount: number;
   referenceImages: Array<{ name: string; dataUrl: string }>;
-  templates: ImageTemplate[];
-  selectedTemplateId: string;
-  templatePromptValue: string;
+  selectedTemplate: ImageTemplate | null;
+  templateFieldValues: Record<string, string>;
   isLoadingTemplates: boolean;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   fileInputRef: RefObject<HTMLInputElement | null>;
@@ -31,8 +30,9 @@ type ImageComposerProps = {
   onPickReferenceImage: () => void;
   onReferenceImageChange: (files: File[]) => void | Promise<void>;
   onRemoveReferenceImage: (index: number) => void;
-  onTemplateChange: (value: string) => void;
-  onTemplatePromptValueChange: (value: string) => void;
+  onOpenTemplatePicker: () => void;
+  onClearTemplate: () => void;
+  onTemplateFieldValueChange: (key: string, value: string) => void;
 };
 
 export function ImageComposer({
@@ -43,9 +43,8 @@ export function ImageComposer({
   availableQuota,
   activeTaskCount,
   referenceImages,
-  templates,
-  selectedTemplateId,
-  templatePromptValue,
+  selectedTemplate,
+  templateFieldValues,
   isLoadingTemplates,
   textareaRef,
   fileInputRef,
@@ -56,8 +55,9 @@ export function ImageComposer({
   onPickReferenceImage,
   onReferenceImageChange,
   onRemoveReferenceImage,
-  onTemplateChange,
-  onTemplatePromptValueChange,
+  onOpenTemplatePicker,
+  onClearTemplate,
+  onTemplateFieldValueChange,
 }: ImageComposerProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -78,9 +78,9 @@ export function ImageComposer({
     { value: "9:16", label: "9:16 (竖版)" },
   ];
   const imageSizeLabel = imageSizeOptions.find((option) => option.value === imageSize)?.label || "未指定";
-  const selectedTemplate = useMemo(
-    () => templates.find((template) => template.id === selectedTemplateId) ?? null,
-    [selectedTemplateId, templates],
+  const requiredOriginalReference = useMemo(
+    () => selectedTemplate?.references.find((reference) => reference.type === "original" && reference.required && !reference.asset_url) ?? null,
+    [selectedTemplate],
   );
 
   useEffect(() => {
@@ -122,37 +122,76 @@ export function ImageComposer({
           }}
         />
 
-        <div className="mb-2 grid gap-2 px-1 sm:mb-3 sm:grid-cols-[minmax(0,240px)_minmax(0,1fr)] sm:items-start sm:gap-3 sm:px-0">
-          <Select value={selectedTemplateId || "__none__"} onValueChange={(value) => onTemplateChange(value === "__none__" ? "" : value)}>
-            <SelectTrigger className="h-10 rounded-2xl border-stone-200 bg-white text-sm shadow-none">
-              <SelectValue placeholder={isLoadingTemplates ? "模板加载中..." : "选择模板"} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__none__">不使用模板</SelectItem>
-              {templates.map((template) => (
-                <SelectItem key={template.id} value={template.id}>
-                  {template.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {selectedTemplate ? (
-            <div className="rounded-2xl border border-stone-200 bg-white px-3 py-2 text-xs leading-5 text-stone-500">
-              <div>{selectedTemplate.mode === "edit" ? "图生图模板" : "文生图模板"}{selectedTemplate.default_size ? ` · ${selectedTemplate.default_size}` : ""}</div>
-              {selectedTemplate.original_image_url ? <div className="mt-1">已配置模板原图预览</div> : null}
-              {selectedTemplate.requires_user_source_image ? <div className="mt-1 text-amber-700">提交前还需要上传待处理原图</div> : null}
+        {selectedTemplate ? (
+          <div className="mb-2 rounded-3xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-600 sm:mb-3 sm:px-5 sm:py-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-stone-950 px-2.5 py-1 text-[11px] font-medium text-white sm:text-xs">{selectedTemplate.mode === "edit" ? "图生图模板" : "文生图模板"}</span>
+                  <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[11px] font-medium text-stone-600 sm:text-xs">v{selectedTemplate.version}</span>
+                  {selectedTemplate.tags.map((tag) => (
+                    <span key={tag} className="rounded-full bg-stone-100 px-2.5 py-1 text-[11px] font-medium text-stone-600 sm:text-xs">#{tag}</span>
+                  ))}
+                </div>
+                <div className="text-sm font-medium text-stone-950 sm:text-base">{selectedTemplate.name}</div>
+                <div className="text-xs leading-5 text-stone-500 sm:text-sm">{selectedTemplate.description || "已应用模板配置"}</div>
+                {requiredOriginalReference ? <div className="text-xs text-amber-700 sm:text-sm">提交前还需要上传待处理原图</div> : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="outline" className="rounded-full border-stone-200" onClick={onOpenTemplatePicker}>
+                  更换模板
+                </Button>
+                <Button type="button" variant="ghost" className="rounded-full text-stone-500 hover:text-stone-900" onClick={onClearTemplate}>
+                  取消模板
+                </Button>
+              </div>
             </div>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
 
-        {selectedTemplate?.requires_placeholder ? (
-          <div className="mb-2 px-1 sm:mb-3 sm:px-0">
-            <Input
-              value={templatePromptValue}
-              onChange={(event) => onTemplatePromptValueChange(event.target.value)}
-              placeholder={`填写模板变量 ${selectedTemplate.placeholder_token}`}
-              className="h-11 rounded-2xl border-stone-200 bg-white"
-            />
+        {selectedTemplate?.placeholders.length ? (
+          <div className="mb-2 grid gap-2 px-1 sm:mb-3 sm:grid-cols-2 sm:px-0">
+            {selectedTemplate.placeholders.map((placeholder) => {
+              const value = templateFieldValues[placeholder.key] ?? "";
+              return (
+                <div key={placeholder.key} className={cn("space-y-1.5", placeholder.type === "textarea" && "sm:col-span-2")}>
+                  <div className="flex items-center gap-2 px-1 text-xs text-stone-500 sm:px-0 sm:text-sm">
+                    <span className="font-medium text-stone-700">{placeholder.label || placeholder.key}</span>
+                    {placeholder.required ? <span className="text-rose-500">*</span> : null}
+                  </div>
+                  {placeholder.type === "textarea" ? (
+                    <Textarea
+                      value={value}
+                      onChange={(event) => onTemplateFieldValueChange(placeholder.key, event.target.value)}
+                      placeholder={placeholder.help || `填写${placeholder.label || placeholder.key}`}
+                      className="min-h-[92px] rounded-2xl border-stone-200 bg-white"
+                    />
+                  ) : placeholder.type === "select" ? (
+                    <Select value={value || "__empty__"} onValueChange={(next) => onTemplateFieldValueChange(placeholder.key, next === "__empty__" ? "" : next)}>
+                      <SelectTrigger className="h-11 rounded-2xl border-stone-200 bg-white text-sm shadow-none">
+                        <SelectValue placeholder={placeholder.help || `选择${placeholder.label || placeholder.key}`} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__empty__">未选择</SelectItem>
+                        {(placeholder.validation.options || []).map((option) => (
+                          <SelectItem key={option} value={option}>{option}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input
+                      type={placeholder.type === "number" ? "number" : "text"}
+                      inputMode={placeholder.type === "number" ? "numeric" : undefined}
+                      value={value}
+                      onChange={(event) => onTemplateFieldValueChange(placeholder.key, event.target.value)}
+                      placeholder={placeholder.help || `填写${placeholder.label || placeholder.key}`}
+                      className="h-11 rounded-2xl border-stone-200 bg-white"
+                    />
+                  )}
+                  {placeholder.help ? <div className="px-1 text-[11px] leading-5 text-stone-400 sm:px-0 sm:text-xs">{placeholder.help}</div> : null}
+                </div>
+              );
+            })}
           </div>
         ) : null}
 
@@ -227,6 +266,15 @@ export function ImageComposer({
             <div className="rounded-b-[24px] border-t border-stone-100 bg-white px-3 pb-3 pt-2 sm:absolute sm:inset-x-0 sm:bottom-0 sm:rounded-b-none sm:border-t-0 sm:bg-gradient-to-t sm:from-white sm:via-white/95 sm:to-transparent sm:px-6 sm:pb-4 sm:pt-6" onClick={(event) => event.stopPropagation()}>
               <div className="flex items-end justify-between gap-2 sm:gap-3">
                 <div className="hide-scrollbar flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:gap-3 sm:overflow-visible sm:pb-0">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 shrink-0 rounded-full border-stone-200 bg-white px-3 text-xs font-medium text-stone-700 shadow-none sm:h-10 sm:px-4 sm:text-sm"
+                    onClick={onOpenTemplatePicker}
+                  >
+                    <Sparkles className="size-3.5 sm:size-4" />
+                    <span className="hidden sm:inline">{isLoadingTemplates ? "模板加载中..." : selectedTemplate ? "更换模板" : "选择模板"}</span>
+                  </Button>
                   <Button
                     type="button"
                     variant="outline"
@@ -333,4 +381,3 @@ export function ImageComposer({
     </div>
   );
 }
-

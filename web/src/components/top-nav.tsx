@@ -13,6 +13,7 @@ import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 const adminNavItems = [
   { href: "/gpt-web", label: "对话" },
   { href: "/image", label: "画图" },
+  { href: "/image-templates", label: "模板管理" },
   { href: "/accounts", label: "号池管理" },
   { href: "/register", label: "注册机" },
   { href: "/image-manager", label: "图片管理" },

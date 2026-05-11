@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -556,77 +557,241 @@ class ImageTemplateServiceTests(unittest.TestCase):
         self.addCleanup(self.asset_root_patcher.stop)
         self.service = image_template_service_module.ImageTemplateService()
 
-    def test_replace_asset_stores_file_under_template_asset_root(self):
-        item = self.service.create_item({"name": "Template A", "prompt_template": "draw cat"})
+    def test_legacy_item_is_normalized_to_rich_schema(self):
+        self.templates_file.write_text(
+            json.dumps([
+                {
+                    "id": "legacy-1",
+                    "name": "Legacy Template",
+                    "description": "desc",
+                    "mode": "edit",
+                    "prompt_template": "draw {{subject}}",
+                    "default_count": 2,
+                    "default_size": "1:1",
+                    "requires_placeholder": True,
+                    "placeholder_token": "{{subject}}",
+                    "requires_user_source_image": True,
+                    "reference_image_rel": "legacy-1/reference.png",
+                    "original_image_rel": None,
+                    "enabled": True,
+                    "created_at": "2026-05-11T00:00:00Z",
+                    "updated_at": "2026-05-11T00:00:00Z",
+                }
+            ]),
+            encoding="utf-8",
+        )
 
-        updated = self.service.replace_asset(item["id"], "reference", "sample.png", io.BytesIO(b"pngdata"))
+        item = self.service.list_items(include_disabled=True)[0]
+
+        self.assertEqual(item["prompts"]["positive"], "draw {{subject}}")
+        self.assertEqual(item["defaults"], {"count": 2, "size": "1:1"})
+        self.assertEqual(item["placeholders"][0]["key"], "subject")
+        self.assertEqual({reference["key"] for reference in item["references"]}, {"reference-image", "source-image"})
+        self.assertTrue(any(reference["key"] == "source-image" and reference["type"] == "original" for reference in item["references"]))
+        self.assertEqual(item["status"], "active")
+
+    def test_replace_reference_asset_stores_file_under_named_reference_slot(self):
+        item = self.service.create_item(
+            {
+                "name": "Template A",
+                "description": "desc",
+                "mode": "generate",
+                "prompts": {"positive": "draw cat", "negative": ""},
+                "defaults": {"count": 1, "size": "1:1"},
+                "placeholders": [],
+                "references": [
+                    {"key": "style", "label": "Style", "type": "reference", "required": False, "weight": 1.0, "help": "", "asset_rel": None}
+                ],
+                "tags": [],
+                "status": "active",
+                "version": "1.0.0",
+            },
+            actor="Admin",
+        )
+
+        updated = self.service.replace_reference_asset(item["id"], "style", "sample.png", io.BytesIO(b"pngdata"), actor="Admin")
 
         self.assertIsNotNone(updated)
-        rel_path = updated["reference_image_rel"]
-        self.assertEqual(rel_path, f"{item['id']}/reference.png")
+        rel_path = updated["references"][0]["asset_rel"]
+        self.assertEqual(rel_path, f"{item['id']}/reference-style.png")
         self.assertTrue((self.assets_dir / rel_path).is_file())
+        self.assertEqual(updated["updated_by"], "Admin")
 
     def test_delete_template_removes_only_its_asset_directory(self):
-        first = self.service.create_item({"name": "Template A", "prompt_template": "draw cat"})
-        second = self.service.create_item({"name": "Template B", "prompt_template": "draw dog"})
-        self.service.replace_asset(first["id"], "reference", "sample.png", io.BytesIO(b"first"))
-        self.service.replace_asset(second["id"], "reference", "sample.png", io.BytesIO(b"second"))
+        payload = {
+            "description": "desc",
+            "mode": "generate",
+            "prompts": {"positive": "draw cat", "negative": ""},
+            "defaults": {"count": 1, "size": "1:1"},
+            "placeholders": [],
+            "references": [
+                {"key": "reference-image", "label": "参考图", "type": "reference", "required": False, "weight": 1.0, "help": "", "asset_rel": None}
+            ],
+            "tags": [],
+            "status": "active",
+            "version": "1.0.0",
+        }
+        first = self.service.create_item({**payload, "name": "Template A"})
+        second = self.service.create_item({**payload, "name": "Template B", "prompts": {"positive": "draw dog", "negative": ""}})
+        self.service.replace_reference_asset(first["id"], "reference-image", "sample.png", io.BytesIO(b"first"))
+        self.service.replace_reference_asset(second["id"], "reference-image", "sample.png", io.BytesIO(b"second"))
 
         self.assertTrue(self.service.delete_item(first["id"]))
 
         self.assertFalse((self.assets_dir / first["id"]).exists())
-        self.assertTrue((self.assets_dir / second["id"] / "reference.png").is_file())
+        self.assertTrue((self.assets_dir / second["id"] / "reference-reference-image.png").is_file())
 
 
 class FakeImageTemplateService:
     def __init__(self):
-        self.items = [
-            {
-                "id": "tpl-1",
-                "name": "Poster",
-                "description": "desc",
-                "mode": "generate",
-                "prompt_template": "draw {{prompt}}",
-                "default_count": 1,
-                "default_size": "1:1",
-                "requires_placeholder": True,
-                "placeholder_token": "{{prompt}}",
-                "requires_user_source_image": False,
-                "reference_image_rel": None,
-                "original_image_rel": None,
-                "enabled": True,
-                "created_at": "2026-05-11T00:00:00Z",
-                "updated_at": "2026-05-11T00:00:00Z",
-            }
-        ]
+        self.items = [self._make_item("tpl-1", "Poster")]
         self.include_disabled_calls = []
+
+    def _make_item(self, item_id, name, **overrides):
+        item = {
+            "id": item_id,
+            "name": name,
+            "description": "desc",
+            "mode": "generate",
+            "prompts": {"positive": "draw {{subject}}", "negative": ""},
+            "defaults": {"count": 1, "size": "1:1"},
+            "placeholders": [
+                {
+                    "key": "subject",
+                    "label": "主题",
+                    "type": "text",
+                    "default_value": "",
+                    "required": True,
+                    "help": "",
+                    "validation": {},
+                }
+            ],
+            "references": [
+                {
+                    "key": "reference-image",
+                    "label": "参考图",
+                    "type": "reference",
+                    "required": False,
+                    "weight": 1.0,
+                    "help": "",
+                    "asset_rel": None,
+                },
+                {
+                    "key": "source-image",
+                    "label": "原图",
+                    "type": "original",
+                    "required": False,
+                    "weight": 1.0,
+                    "help": "",
+                    "asset_rel": None,
+                },
+            ],
+            "cover_image_rel": None,
+            "tags": ["poster"],
+            "status": "active",
+            "version": "1.0.0",
+            "created_by": "Admin",
+            "updated_by": "Admin",
+            "created_at": "2026-05-11T00:00:00Z",
+            "updated_at": "2026-05-11T00:00:00Z",
+        }
+        item.update(overrides)
+        return item
 
     def list_items(self, *, include_disabled=True):
         self.include_disabled_calls.append(include_disabled)
         return list(self.items)
 
-    def create_item(self, payload):
-        item = {**self.items[0], **payload, "id": "tpl-2"}
+    def create_item(self, payload, actor=None):
+        next_payload = dict(payload)
+        item = self._make_item("tpl-2", next_payload.get("name") or "Poster 2")
+        item.update(next_payload)
+        if actor:
+            item["created_by"] = actor
+            item["updated_by"] = actor
         self.items.append(item)
         return item
 
-    def update_item(self, template_id, payload):
-        return {**self.items[0], **payload, "id": template_id}
+    def update_item(self, template_id, payload, actor=None):
+        next_payload = dict(payload)
+        item = self._make_item(template_id, next_payload.get("name") or self.items[0]["name"])
+        item.update(next_payload)
+        if actor:
+            item["updated_by"] = actor
+        return item
 
     def delete_item(self, template_id):
         return template_id == "tpl-1"
 
     def replace_asset(self, template_id, kind, filename, fileobj):
-        return {**self.items[0], "id": template_id, "reference_image_rel": f"{template_id}/{kind}.png"}
+        item = self._make_item(template_id, "Poster", cover_image_rel=f"{template_id}/{kind}.png") if kind == "cover" else self._make_item(template_id, "Poster")
+        if kind in {"reference", "original"}:
+            item["references"] = [
+                {
+                    **reference,
+                    "asset_rel": f"{template_id}/{kind}.png" if reference["type"] == ("reference" if kind == "reference" else "original") else reference["asset_rel"],
+                }
+                for reference in item["references"]
+            ]
+        return item
 
     def delete_asset(self, template_id, kind):
-        return {**self.items[0], "id": template_id, "reference_image_rel": None}
+        item = self._make_item(template_id, "Poster")
+        if kind == "cover":
+            item["cover_image_rel"] = None
+        return item
+
+    def replace_reference_asset(self, template_id, reference_key, filename, fileobj, actor=None):
+        item = self._make_item(template_id, "Poster")
+        item["references"] = [
+            {**reference, "asset_rel": f"{template_id}/{reference_key}.png" if reference["key"] == reference_key else reference["asset_rel"]}
+            for reference in item["references"]
+        ]
+        if actor:
+            item["updated_by"] = actor
+        return item
+
+    def delete_reference_asset(self, template_id, reference_key, actor=None):
+        item = self._make_item(template_id, "Poster")
+        item["references"] = [
+            {**reference, "asset_rel": None if reference["key"] == reference_key else reference["asset_rel"]}
+            for reference in item["references"]
+        ]
+        if actor:
+            item["updated_by"] = actor
+        return item
 
     def serialize_item(self, item, base_url):
+        prompts = dict(item.get("prompts") or {})
+        defaults = dict(item.get("defaults") or {})
+        references = []
+        for reference in item.get("references") or []:
+            references.append(
+                {
+                    **reference,
+                    "asset_url": f"{base_url}/template-images/{reference['asset_rel']}" if reference.get("asset_rel") else None,
+                }
+            )
+        reference_image = next((reference for reference in references if reference.get("type") == "reference"), None)
+        original_image = next((reference for reference in references if reference.get("type") == "original"), None)
         return {
             **item,
-            "reference_image_url": f"{base_url}/template-images/{item['id']}/reference.png" if item.get("reference_image_rel") else None,
-            "original_image_url": f"{base_url}/template-images/{item['id']}/original.png" if item.get("original_image_rel") else None,
+            "prompts": prompts,
+            "defaults": defaults,
+            "references": references,
+            "cover_image_url": f"{base_url}/template-images/{item['cover_image_rel']}" if item.get("cover_image_rel") else None,
+            "prompt_template": prompts.get("positive", ""),
+            "negative_prompt": prompts.get("negative", ""),
+            "default_count": defaults.get("count", 1),
+            "default_size": defaults.get("size", ""),
+            "requires_placeholder": bool(item.get("placeholders")),
+            "placeholder_token": "{{subject}}",
+            "requires_user_source_image": bool(original_image and original_image.get("required") and not original_image.get("asset_rel")),
+            "reference_image_rel": reference_image.get("asset_rel") if reference_image else None,
+            "reference_image_url": reference_image.get("asset_url") if reference_image else None,
+            "original_image_rel": original_image.get("asset_rel") if original_image else None,
+            "original_image_url": original_image.get("asset_url") if original_image else None,
+            "enabled": item.get("status") == "active",
         }
 
 
@@ -634,7 +799,7 @@ class ImageTemplatesApiTests(unittest.TestCase):
     def setUp(self):
         self.fake_service = FakeImageTemplateService()
         self.require_identity_patcher = mock.patch.object(image_templates_module, "require_identity")
-        self.require_admin_patcher = mock.patch.object(image_templates_module, "require_admin", return_value={"id": "admin"})
+        self.require_admin_patcher = mock.patch.object(image_templates_module, "require_admin", return_value={"id": "admin", "name": "管理员"})
         self.resolve_base_url_patcher = mock.patch.object(image_templates_module, "resolve_image_base_url", return_value="https://example.com")
         self.service_patcher = mock.patch.object(image_templates_module, "image_template_service", self.fake_service)
         self.require_identity = self.require_identity_patcher.start()
@@ -657,6 +822,7 @@ class ImageTemplatesApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.fake_service.include_disabled_calls[-1], False)
         self.assertEqual(response.json()["items"][0]["id"], "tpl-1")
+        self.assertEqual(response.json()["items"][0]["prompts"]["positive"], "draw {{subject}}")
 
     def test_create_template_returns_item_and_full_list(self):
         response = self.client.post(
@@ -666,19 +832,39 @@ class ImageTemplatesApiTests(unittest.TestCase):
                 "name": "Poster 2",
                 "description": "desc",
                 "mode": "generate",
-                "prompt_template": "draw {{prompt}}",
-                "default_count": 1,
-                "default_size": "1:1",
-                "requires_placeholder": True,
-                "placeholder_token": "{{prompt}}",
-                "requires_user_source_image": False,
-                "enabled": True,
+                "prompts": {"positive": "draw {{subject}}", "negative": "no blur"},
+                "defaults": {"count": 1, "size": "1:1"},
+                "placeholders": [
+                    {
+                        "key": "subject",
+                        "label": "主题",
+                        "type": "text",
+                        "default_value": "",
+                        "required": True,
+                        "help": "",
+                        "validation": {},
+                    }
+                ],
+                "references": [],
+                "tags": ["poster"],
+                "status": "active",
+                "version": "1.0.0",
             },
         )
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["item"]["id"], "tpl-2")
+        self.assertEqual(response.json()["item"]["prompts"]["negative"], "no blur")
         self.assertGreaterEqual(len(response.json()["items"]), 1)
+
+    def test_delete_reference_asset_returns_serialized_item(self):
+        response = self.client.delete(
+            "/api/image-templates/tpl-1/references/reference-image/asset",
+            headers={"Authorization": "Bearer key"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["item"]["references"][0]["asset_url"])
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { ImageComposer } from "@/app/image/components/image-composer";
 import { ImageResults, type ImageLightboxItem } from "@/app/image/components/image-results";
 import { ImageSidebar } from "@/app/image/components/image-sidebar";
+import { ImageTemplatePicker } from "@/app/image/components/image-template-picker";
 import { ImageLightbox } from "@/components/image-lightbox";
 import {
   Dialog,
@@ -144,7 +145,7 @@ async function fetchImageAsFile(url: string, fileName: string) {
   return new File([blob], fileName, { type: blob.type || "image/png" });
 }
 
-async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: string) {
+async async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: string) {
   const direct = buildReferenceImageFromResult(image, fileName);
   if (direct) {
     return {
@@ -165,6 +166,15 @@ async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: 
     },
     file,
   };
+}
+
+function createTemplateFieldValues(template: ImageTemplate | null) {
+  if (!template) {
+    return {} as Record<string, string>;
+  }
+  return Object.fromEntries(
+    template.placeholders.map((placeholder) => [placeholder.key, placeholder.default_value || ""]),
+  );
 }
 
 async function buildReferenceImageFromTemplate(url: string, fileName: string) {
@@ -385,7 +395,8 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
   const [referenceImageSources, setReferenceImageSources] = useState<Array<"user" | "template" | "history">>([]);
   const [templates, setTemplates] = useState<ImageTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
-  const [templatePromptValue, setTemplatePromptValue] = useState("");
+  const [templateFieldValues, setTemplateFieldValues] = useState<Record<string, string>>({});
+  const [isTemplatePickerOpen, setIsTemplatePickerOpen] = useState(false);
   const [conversations, setConversations] = useState<ImageConversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -630,8 +641,8 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
 
   const clearComposerInputs = useCallback(() => {
     setImagePrompt("");
-    setTemplatePromptValue("");
     setSelectedTemplateId("");
+    setTemplateFieldValues({});
     setReferenceImageFiles([]);
     setReferenceImages([]);
     setReferenceImageSources([]);
@@ -642,7 +653,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
 
   const clearSelectedTemplate = useCallback(() => {
     setSelectedTemplateId("");
-    setTemplatePromptValue("");
+    setTemplateFieldValues({});
     setReferenceImageFiles((prev) => prev.filter((_, index) => referenceImageSources[index] !== "template"));
     setReferenceImages((prev) => prev.filter((_, index) => referenceImageSources[index] !== "template"));
     setReferenceImageSources((prev) => prev.filter((source) => source !== "template"));
@@ -675,19 +686,25 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
   );
 
   const buildEffectivePrompt = useCallback(() => {
-    const basePrompt = imagePrompt.trim();
-    if (!selectedTemplate?.requires_placeholder) {
-      return basePrompt;
+    let prompt = imagePrompt.trim();
+    if (!selectedTemplate) {
+      return prompt;
     }
-    const placeholderValue = templatePromptValue.trim();
-    if (!placeholderValue) {
-      throw new Error("请先填写模板要求的关键字内容");
+
+    for (const placeholder of selectedTemplate.placeholders) {
+      const token = `{{${placeholder.key}}}`;
+      const value = String(templateFieldValues[placeholder.key] ?? placeholder.default_value ?? "").trim();
+      if (placeholder.required && !value) {
+        throw new Error(`请先填写${placeholder.label || placeholder.key}`);
+      }
+      if (!prompt.includes(token)) {
+        throw new Error(`当前模板提示词缺少占位符 ${token}`);
+      }
+      prompt = prompt.replaceAll(token, value);
     }
-    if (!basePrompt.includes(selectedTemplate.placeholder_token)) {
-      throw new Error("当前模板提示词缺少占位符");
-    }
-    return basePrompt.replaceAll(selectedTemplate.placeholder_token, placeholderValue);
-  }, [imagePrompt, selectedTemplate, templatePromptValue]);
+
+    return prompt;
+  }, [imagePrompt, selectedTemplate, templateFieldValues]);
 
   const applyTemplate = useCallback(
     async (templateId: string) => {
@@ -700,32 +717,35 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         return;
       }
       try {
-        const templateAssets: Array<{ referenceImage: StoredReferenceImage; file: File }> = [];
-        if (template.mode === "edit" && !template.requires_user_source_image && template.original_image_url) {
-          templateAssets.push(
-            await buildReferenceImageFromTemplate(
-              template.original_image_url,
-              `${template.name || "template"}-original.png`,
+        const templateAssets = await Promise.all(
+          template.references
+            .filter((reference) => reference.asset_url)
+            .map((reference) =>
+              buildReferenceImageFromTemplate(
+                reference.asset_url as string,
+                `${template.name || "template"}-${reference.key}.png`,
+              ),
             ),
-          );
-        }
-        if (template.reference_image_url) {
-          templateAssets.push(
-            await buildReferenceImageFromTemplate(
-              template.reference_image_url,
-              `${template.name || "template"}-reference.png`,
-            ),
-          );
-        }
+        );
 
         setSelectedTemplateId(template.id);
-        setTemplatePromptValue("");
-        setImagePrompt(template.prompt_template);
-        setImageCount(clampImageCount(String(template.default_count || 1), maxSelectableImageCount));
-        setImageSize(template.default_size || "");
-        setReferenceImages(templateAssets.map((item) => item.referenceImage));
-        setReferenceImageFiles(templateAssets.map((item) => item.file));
-        setReferenceImageSources(templateAssets.map(() => "template"));
+        setTemplateFieldValues(createTemplateFieldValues(template));
+        setImagePrompt(template.prompts.positive);
+        setImageCount(clampImageCount(String(template.defaults.count || 1), maxSelectableImageCount));
+        setImageSize(template.defaults.size || "");
+        setReferenceImageFiles((prev) => [
+          ...prev.filter((_, index) => referenceImageSources[index] !== "template"),
+          ...templateAssets.map((item) => item.file),
+        ]);
+        setReferenceImages((prev) => [
+          ...prev.filter((_, index) => referenceImageSources[index] !== "template"),
+          ...templateAssets.map((item) => item.referenceImage),
+        ]);
+        setReferenceImageSources((prev) => [
+          ...prev.filter((source) => source !== "template"),
+          ...templateAssets.map(() => "template" as const),
+        ]);
+        setIsTemplatePickerOpen(false);
         if (fileInputRef.current) {
           fileInputRef.current.value = "";
         }
@@ -736,7 +756,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         toast.error(message);
       }
     },
-    [clearSelectedTemplate, maxSelectableImageCount, templates],
+    [clearSelectedTemplate, maxSelectableImageCount, referenceImageSources, templates],
   );
 
   const handleCreateDraft = () => {
@@ -932,7 +952,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
 
         setSelectedConversationId(conversationId);
         setSelectedTemplateId("");
-        setTemplatePromptValue("");
+        setTemplateFieldValues({});
 
         setReferenceImages((prev) => [...prev, nextReference.referenceImage]);
         setReferenceImageFiles((prev) => [...prev, nextReference.file]);
@@ -957,7 +977,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
 
     setSelectedConversationId(conversationId);
     setSelectedTemplateId("");
-    setTemplatePromptValue("");
+    setTemplateFieldValues({});
     setImagePrompt(turn.prompt);
     setImageCount(clampImageCount(String(Math.max(1, turn.count || turn.images.length || 1)), maxSelectableImageCount));
     setImageSize(turn.size);
@@ -1276,7 +1296,10 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
 
     const effectiveImageMode: ImageConversationMode =
       selectedTemplate?.mode === "edit" || referenceImageFiles.length > 0 ? "edit" : "generate";
-    if (selectedTemplate?.requires_user_source_image && !referenceImageSources.includes("user")) {
+    const requiresUserOriginal = selectedTemplate?.references.some(
+      (reference) => reference.type === "original" && reference.required && !reference.asset_url,
+    );
+    if (requiresUserOriginal && !referenceImageSources.includes("user")) {
       toast.error("这个模板需要额外上传待处理原图");
       return;
     }
@@ -1383,6 +1406,21 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         </Dialog>
 
         <div className="flex min-h-0 flex-col gap-2 sm:gap-4">
+          <ImageTemplatePicker
+            open={isTemplatePickerOpen}
+            onOpenChange={setIsTemplatePickerOpen}
+            templates={templates}
+            selectedTemplateId={selectedTemplateId}
+            isLoading={isLoadingTemplates}
+            onSelectTemplate={(templateId) => {
+              void applyTemplate(templateId);
+            }}
+            onClearTemplate={() => {
+              clearSelectedTemplate();
+              setIsTemplatePickerOpen(false);
+            }}
+          />
+
           <div className="flex items-center justify-between gap-2 px-1 lg:hidden">
             <Button
               variant="outline"
@@ -1434,9 +1472,8 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
             availableQuota={availableQuota}
             activeTaskCount={activeTaskCount}
             referenceImages={referenceImages}
-            templates={templates}
-            selectedTemplateId={selectedTemplateId}
-            templatePromptValue={templatePromptValue}
+            selectedTemplate={selectedTemplate}
+            templateFieldValues={templateFieldValues}
             isLoadingTemplates={isLoadingTemplates}
             textareaRef={textareaRef}
             fileInputRef={fileInputRef}
@@ -1447,10 +1484,11 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
             onPickReferenceImage={() => fileInputRef.current?.click()}
             onReferenceImageChange={handleReferenceImageChange}
             onRemoveReferenceImage={handleRemoveReferenceImage}
-            onTemplateChange={(value) => {
-              void applyTemplate(value);
+            onOpenTemplatePicker={() => setIsTemplatePickerOpen(true)}
+            onClearTemplate={clearSelectedTemplate}
+            onTemplateFieldValueChange={(key, value) => {
+              setTemplateFieldValues((current) => ({ ...current, [key]: value }));
             }}
-            onTemplatePromptValueChange={setTemplatePromptValue}
           />
         </div>
       </section>
