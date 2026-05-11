@@ -345,6 +345,111 @@ export type ImageTemplatePayload = {
   version: string;
 };
 
+function normalizeImageTemplate(input: Partial<ImageTemplate> & Record<string, unknown>): ImageTemplate {
+  const promptsSource = (input.prompts as Partial<ImageTemplatePrompts> | undefined) || {};
+  const defaultsSource = (input.defaults as Partial<ImageTemplateDefaults> | undefined) || {};
+  const placeholdersSource = Array.isArray(input.placeholders) ? input.placeholders : [];
+  const referencesSource = Array.isArray(input.references) ? input.references : [];
+  const tagsSource = Array.isArray(input.tags) ? input.tags : [];
+  const positivePrompt = String(promptsSource.positive ?? input.prompt_template ?? "");
+  const negativePrompt = String(promptsSource.negative ?? input.negative_prompt ?? "");
+  const references = referencesSource.map((reference, index) => {
+    const current = (reference || {}) as Partial<ImageTemplateReference> & Record<string, unknown>;
+    return {
+      key: String(current.key ?? `reference_${index + 1}`),
+      label: String(current.label ?? current.key ?? `参考图 ${index + 1}`),
+      type: current.type === "original" ? "original" : "reference",
+      required: Boolean(current.required),
+      weight: typeof current.weight === "number" ? current.weight : Number(current.weight ?? 1) || 1,
+      help: String(current.help ?? ""),
+      asset_rel: current.asset_rel == null ? null : String(current.asset_rel),
+      asset_url: current.asset_url == null ? null : String(current.asset_url),
+      order: typeof current.order === "number" ? current.order : undefined,
+    } satisfies ImageTemplateReference;
+  });
+  const placeholders = placeholdersSource.map((placeholder, index) => {
+    const current = (placeholder || {}) as Partial<ImageTemplatePlaceholder> & Record<string, unknown>;
+    const validation = (current.validation as Partial<ImageTemplatePlaceholderValidation> | undefined) || {};
+    return {
+      key: String(current.key ?? `field_${index + 1}`),
+      label: String(current.label ?? current.key ?? `变量 ${index + 1}`),
+      type: current.type === "textarea" || current.type === "number" || current.type === "select" ? current.type : "text",
+      default_value: String(current.default_value ?? ""),
+      required: Boolean(current.required),
+      help: String(current.help ?? ""),
+      validation: {
+        min_length: validation.min_length ?? null,
+        max_length: validation.max_length ?? null,
+        min: validation.min ?? null,
+        max: validation.max ?? null,
+        regex: String(validation.regex ?? ""),
+        options: Array.isArray(validation.options) ? validation.options.map((option) => String(option)) : [],
+      },
+      order: typeof current.order === "number" ? current.order : undefined,
+    } satisfies ImageTemplatePlaceholder;
+  });
+
+  return {
+    id: String(input.id ?? ""),
+    name: String(input.name ?? ""),
+    description: String(input.description ?? ""),
+    mode: input.mode === "edit" ? "edit" : "generate",
+    prompts: {
+      positive: positivePrompt,
+      negative: negativePrompt,
+    },
+    defaults: {
+      count: typeof defaultsSource.count === "number" ? defaultsSource.count : Number(input.default_count ?? defaultsSource.count ?? 1) || 1,
+      size: String(defaultsSource.size ?? input.default_size ?? ""),
+    },
+    placeholders,
+    references,
+    tags: tagsSource.map((tag) => String(tag)).filter(Boolean),
+    status: input.status === "draft" || input.status === "archived" ? input.status : "active",
+    version: String(input.version ?? "1.0.0"),
+    cover_image_rel: input.cover_image_rel == null ? null : String(input.cover_image_rel),
+    cover_image_url: input.cover_image_url == null ? null : String(input.cover_image_url),
+    created_by: input.created_by == null ? null : String(input.created_by),
+    updated_by: input.updated_by == null ? null : String(input.updated_by),
+    created_at: String(input.created_at ?? ""),
+    updated_at: String(input.updated_at ?? ""),
+    prompt_template: String(input.prompt_template ?? positivePrompt),
+    negative_prompt: String(input.negative_prompt ?? negativePrompt),
+    default_count: typeof input.default_count === "number" ? input.default_count : Number(defaultsSource.count ?? 1) || 1,
+    default_size: String(input.default_size ?? defaultsSource.size ?? ""),
+    requires_placeholder: typeof input.requires_placeholder === "boolean" ? input.requires_placeholder : placeholders.length > 0,
+    placeholder_token: String(input.placeholder_token ?? (placeholders[0] ? `{{${placeholders[0].key}}}` : "{{prompt}}")),
+    requires_user_source_image:
+      typeof input.requires_user_source_image === "boolean"
+        ? input.requires_user_source_image
+        : references.some((reference) => reference.type === "original" && reference.required && !reference.asset_rel),
+    reference_image_rel: input.reference_image_rel == null ? references.find((reference) => reference.type === "reference")?.asset_rel ?? null : String(input.reference_image_rel),
+    reference_image_url: input.reference_image_url == null ? references.find((reference) => reference.type === "reference")?.asset_url ?? null : String(input.reference_image_url),
+    original_image_rel: input.original_image_rel == null ? references.find((reference) => reference.type === "original")?.asset_rel ?? null : String(input.original_image_rel),
+    original_image_url: input.original_image_url == null ? references.find((reference) => reference.type === "original")?.asset_url ?? null : String(input.original_image_url),
+    enabled: typeof input.enabled === "boolean" ? input.enabled : input.status !== "archived",
+  };
+}
+
+function normalizeImageTemplateListResponse(response: { items: Array<Partial<ImageTemplate> & Record<string, unknown>> }) {
+  return {
+    items: response.items.map((item) => normalizeImageTemplate(item)),
+  };
+}
+
+function normalizeImageTemplateMutationResponse(response: { item: Partial<ImageTemplate> & Record<string, unknown>; items: Array<Partial<ImageTemplate> & Record<string, unknown>> }) {
+  return {
+    item: normalizeImageTemplate(response.item),
+    items: response.items.map((item) => normalizeImageTemplate(item)),
+  };
+}
+
+function normalizeSingleImageTemplateResponse(response: { item: Partial<ImageTemplate> & Record<string, unknown> }) {
+  return {
+    item: normalizeImageTemplate(response.item),
+  };
+}
+
 export type UserKey = {
   id: string;
   name: string;
@@ -543,57 +648,65 @@ export async function fetchImageTasks(ids: string[]) {
 }
 
 export async function fetchImageTemplates() {
-  return httpRequest<{ items: ImageTemplate[] }>("/api/image-templates");
+  const response = await httpRequest<{ items: Array<Partial<ImageTemplate> & Record<string, unknown>> }>("/api/image-templates");
+  return normalizeImageTemplateListResponse(response);
 }
 
 export async function createImageTemplate(body: ImageTemplatePayload) {
-  return httpRequest<{ item: ImageTemplate; items: ImageTemplate[] }>("/api/image-templates", {
+  const response = await httpRequest<{ item: Partial<ImageTemplate> & Record<string, unknown>; items: Array<Partial<ImageTemplate> & Record<string, unknown>> }>("/api/image-templates", {
     method: "POST",
     body,
   });
+  return normalizeImageTemplateMutationResponse(response);
 }
 
 export async function updateImageTemplate(templateId: string, body: ImageTemplatePayload) {
-  return httpRequest<{ item: ImageTemplate; items: ImageTemplate[] }>(`/api/image-templates/${templateId}`, {
+  const response = await httpRequest<{ item: Partial<ImageTemplate> & Record<string, unknown>; items: Array<Partial<ImageTemplate> & Record<string, unknown>> }>(`/api/image-templates/${templateId}`, {
     method: "POST",
     body,
   });
+  return normalizeImageTemplateMutationResponse(response);
 }
 
 export async function deleteImageTemplate(templateId: string) {
-  return httpRequest<{ items: ImageTemplate[] }>(`/api/image-templates/${templateId}`, {
+  const response = await httpRequest<{ items: Array<Partial<ImageTemplate> & Record<string, unknown>> }>(`/api/image-templates/${templateId}`, {
     method: "DELETE",
   });
+  return normalizeImageTemplateListResponse(response);
 }
 
 export async function uploadImageTemplateAsset(templateId: string, kind: "reference" | "original" | "cover", file: File) {
   const formData = new FormData();
   formData.append("file", file);
-  return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/assets/${kind}`, {
+  const response = await httpRequest<{ item: Partial<ImageTemplate> & Record<string, unknown> }>(`/api/image-templates/${templateId}/assets/${kind}`, {
     method: "POST",
     body: formData,
   });
+  return normalizeSingleImageTemplateResponse(response);
 }
 
 export async function deleteImageTemplateAsset(templateId: string, kind: "reference" | "original" | "cover") {
-  return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/assets/${kind}`, {
+  const response = await httpRequest<{ item: Partial<ImageTemplate> & Record<string, unknown> }>(`/api/image-templates/${templateId}/assets/${kind}`, {
     method: "DELETE",
   });
+  return normalizeSingleImageTemplateResponse(response);
 }
 
 export async function uploadImageTemplateReferenceAsset(templateId: string, referenceKey: string, file: File) {
   const formData = new FormData();
   formData.append("file", file);
-  return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/references/${encodeURIComponent(referenceKey)}/asset`, {
+  const response = await httpRequest<{ item: Partial<ImageTemplate> & Record<string, unknown> }>(`/api/image-templates/${templateId}/references/${encodeURIComponent(referenceKey)}/asset`, {
     method: "POST",
     body: formData,
   });
+  return normalizeSingleImageTemplateResponse(response);
 }
 
 export async function deleteImageTemplateReferenceAsset(templateId: string, referenceKey: string) {
-  return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/references/${encodeURIComponent(referenceKey)}/asset`, {
+  const response = await httpRequest<{ item: Partial<ImageTemplate> & Record<string, unknown> }>(`/api/image-templates/${templateId}/references/${encodeURIComponent(referenceKey)}/asset`, {
     method: "DELETE",
   });
+  return normalizeSingleImageTemplateResponse(response);
 }
 
 export async function createGptWebChatCompletion(messages: GptWebChatMessage[]) {
