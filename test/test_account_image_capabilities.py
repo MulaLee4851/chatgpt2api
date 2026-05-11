@@ -55,6 +55,40 @@ fake_api_app = types.ModuleType("api.app")
 fake_api_app.create_app = lambda *args, **kwargs: None
 sys.modules.setdefault("api.app", fake_api_app)
 
+fake_backup_service = types.ModuleType("services.backup_service")
+
+class FakeBackupError(Exception):
+    pass
+
+class FakeBackupService:
+    def test_connection(self):
+        return {"ok": True}
+
+    def list_backups(self):
+        return []
+
+    def get_status(self):
+        return {}
+
+    def get_settings(self):
+        return {}
+
+    def run_backup(self):
+        return {"ok": True}
+
+    def delete_backup(self, _key):
+        return None
+
+    def get_backup_detail(self, _key):
+        return {}
+
+    def download_backup(self, _key):
+        return {"name": "backup.bin", "size": 0, "payload": b"", "content_type": "application/octet-stream"}
+
+fake_backup_service.BackupError = FakeBackupError
+fake_backup_service.backup_service = FakeBackupService()
+sys.modules.setdefault("services.backup_service", fake_backup_service)
+
 fake_multipart = types.ModuleType("multipart")
 fake_multipart.__version__ = "0.0-test"
 sys.modules.setdefault("multipart", fake_multipart)
@@ -65,6 +99,7 @@ sys.modules.setdefault("multipart.multipart", fake_multipart_submodule)
 
 import api.accounts as accounts_module
 import api.ai as ai_module
+import api.system as system_module
 from services.account_service import AccountService
 from services.auth_service import AuthService
 from services.storage.json_storage import JSONStorageBackend
@@ -442,6 +477,62 @@ class AIApiPermissionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.consume_tokens.assert_called_once_with(identity, 7)
+
+
+class SystemLoginTests(unittest.TestCase):
+    def setUp(self):
+        self.require_identity_patcher = mock.patch.object(system_module, "require_identity")
+        self.ensure_not_expired_patcher = mock.patch.object(system_module, "_ensure_identity_not_expired")
+        self.require_identity = self.require_identity_patcher.start()
+        self.ensure_not_expired = self.ensure_not_expired_patcher.start()
+        self.addCleanup(self.require_identity_patcher.stop)
+        self.addCleanup(self.ensure_not_expired_patcher.stop)
+        app = FastAPI()
+        app.include_router(system_module.create_router("test-version"))
+        self.client = TestClient(app)
+
+    def test_login_returns_permissions_for_user_key(self):
+        self.require_identity.return_value = {
+            "id": "user-1",
+            "name": "Image Only",
+            "role": "user",
+            "permissions": {"chat": False, "image": True},
+        }
+
+        response = self.client.post("/auth/login", headers={"Authorization": "Bearer key"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json(),
+            {
+                "ok": True,
+                "version": "test-version",
+                "role": "user",
+                "subject_id": "user-1",
+                "name": "Image Only",
+                "permissions": {"chat": False, "image": True},
+            },
+        )
+        self.ensure_not_expired.assert_called_once_with(self.require_identity.return_value)
+
+    def test_login_rejects_expired_key(self):
+        identity = {
+            "id": "user-1",
+            "name": "Expired",
+            "role": "user",
+            "permissions": {"chat": True, "image": True},
+        }
+        self.require_identity.return_value = identity
+        self.ensure_not_expired.side_effect = ai_module.HTTPException(
+            status_code=403,
+            detail={"error": "当前密钥已过期"},
+        )
+
+        response = self.client.post("/auth/login", headers={"Authorization": "Bearer key"})
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.json()["detail"]["error"], "当前密钥已过期")
+        self.ensure_not_expired.assert_called_once_with(identity)
 
 
 if __name__ == "__main__":

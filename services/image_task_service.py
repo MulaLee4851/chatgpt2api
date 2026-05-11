@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from services.auth_service import auth_service
 from services.config import DATA_DIR, config
 from services.content_filter import request_text
 from services.log_service import LOG_TYPE_CALL, log_service
@@ -59,6 +60,19 @@ def _collect_image_urls(data: list[Any]) -> list[str]:
             if isinstance(url, str) and url:
                 urls.append(url)
     return urls
+
+
+def _consume_identity_images(identity: dict[str, object], image_count: int) -> dict[str, object]:
+    if identity.get("role") == "admin":
+        return identity
+    key_id = _clean(identity.get("id"))
+    amount = max(0, int(image_count or 0))
+    if not key_id or amount <= 0:
+        return identity
+    updated = auth_service.consume_images(key_id, amount, role="user")
+    if updated is not None:
+        identity.update(updated)
+    return identity
 
 
 def _public_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -232,6 +246,7 @@ class ImageTaskService:
             if not isinstance(data, list) or not data:
                 message = _clean(result.get("message")) or "image task returned no image data"
                 raise RuntimeError(message)
+            _consume_identity_images(identity, len(data))
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="")
             self._log_call(
                 identity,

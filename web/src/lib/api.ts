@@ -231,17 +231,18 @@ type ImageTaskListResponse = {
   missing_ids: string[];
 };
 
+export type UserKeyPermissions = {
+  chat: boolean;
+  image: boolean;
+};
+
 export type LoginResponse = {
   ok: boolean;
   version: string;
   role: AuthRole;
   subject_id: string;
   name: string;
-};
-
-export type UserKeyPermissions = {
-  chat: boolean;
-  image: boolean;
+  permissions: UserKeyPermissions;
 };
 
 export type UserKeyLimits = {

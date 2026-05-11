@@ -7,6 +7,7 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 fake_database_storage = types.ModuleType("services.storage.database_storage")
 fake_database_storage.DatabaseStorageBackend = object
@@ -51,6 +52,7 @@ from services.image_task_service import ImageTaskService
 
 OWNER = {"id": "owner-1", "name": "Owner", "role": "admin"}
 OTHER_OWNER = {"id": "owner-2", "name": "Other", "role": "user"}
+USER_OWNER = {"id": "user-1", "name": "User", "role": "user"}
 
 
 def wait_for_task(service: ImageTaskService, identity: dict[str, object], task_id: str, status: str, timeout: float = 2.0):
@@ -183,6 +185,24 @@ class ImageTaskServiceTests(unittest.TestCase):
 
             self.assertEqual([item["status"] for item in result["items"]], ["error", "error"])
             self.assertTrue(all("已中断" in item.get("error", "") for item in result["items"]))
+
+    def test_success_task_consumes_image_quota_for_user_keys(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "image_tasks.json"
+            service = self.make_service(path, lambda _payload: {"data": [{"b64_json": "a"}, {"b64_json": "b"}]})
+
+            with mock.patch("services.image_task_service.auth_service.consume_images") as consume_images:
+                service.submit_generation(
+                    USER_OWNER,
+                    client_task_id="quota-task",
+                    prompt="cat",
+                    model="gpt-image-2",
+                    size=None,
+                    base_url="http://local.test",
+                )
+                wait_for_task(service, USER_OWNER, "quota-task", "success")
+
+            consume_images.assert_called_once_with("user-1", 2, role="user")
 
 
 if __name__ == "__main__":

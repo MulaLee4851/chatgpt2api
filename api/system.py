@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -7,7 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from api.support import require_admin, require_identity, resolve_image_base_url
+from api.support import _ensure_identity_not_expired, require_admin, require_identity, resolve_image_base_url
 from services.backup_service import BackupError, backup_service
 from services.config import config
 from services.image_service import delete_images, download_images_zip, get_image_download_response, get_thumbnail_response, list_images
@@ -47,14 +48,16 @@ def create_router(app_version: str) -> APIRouter:
     router = APIRouter()
 
     @router.post("/auth/login")
-    async def login(authorization: str | None = Header(default=None)):
+    async def login(authorization: Optional[str] = Header(default=None)):
         identity = require_identity(authorization)
+        _ensure_identity_not_expired(identity)
         return {
             "ok": True,
             "version": app_version,
             "role": identity.get("role"),
             "subject_id": identity.get("id"),
             "name": identity.get("name"),
+            "permissions": identity.get("permissions") or {"chat": True, "image": True},
         }
 
     @router.get("/version")
@@ -62,17 +65,17 @@ def create_router(app_version: str) -> APIRouter:
         return {"version": app_version}
 
     @router.get("/api/settings")
-    async def get_settings(authorization: str | None = Header(default=None)):
+    async def get_settings(authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         return {"config": config.get()}
 
     @router.post("/api/settings")
-    async def save_settings(body: SettingsUpdateRequest, authorization: str | None = Header(default=None)):
+    async def save_settings(body: SettingsUpdateRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         return {"config": config.update(body.model_dump(mode="python"))}
 
     @router.get("/api/images")
-    async def get_images(request: Request, start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):
+    async def get_images(request: Request, start_date: str = "", end_date: str = "", authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         return list_images(resolve_image_base_url(request), start_date=start_date.strip(), end_date=end_date.strip())
 
@@ -81,12 +84,12 @@ def create_router(app_version: str) -> APIRouter:
         return get_thumbnail_response(image_path)
 
     @router.post("/api/images/delete")
-    async def delete_images_endpoint(body: ImageDeleteRequest, authorization: str | None = Header(default=None)):
+    async def delete_images_endpoint(body: ImageDeleteRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         return delete_images(body.paths, start_date=body.start_date.strip(), end_date=body.end_date.strip(), all_matching=body.all_matching)
 
     @router.post("/api/images/download")
-    async def download_images_endpoint(body: ImageDownloadRequest, authorization: str | None = Header(default=None)):
+    async def download_images_endpoint(body: ImageDownloadRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         buf = download_images_zip(body.paths)
         return StreamingResponse(
@@ -96,22 +99,22 @@ def create_router(app_version: str) -> APIRouter:
         )
 
     @router.get("/api/images/download/{image_path:path}")
-    async def download_single_image_endpoint(image_path: str, authorization: str | None = Header(default=None)):
+    async def download_single_image_endpoint(image_path: str, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         return get_image_download_response(image_path)
 
     @router.get("/api/logs")
-    async def get_logs(type: str = "", start_date: str = "", end_date: str = "", authorization: str | None = Header(default=None)):
+    async def get_logs(type: str = "", start_date: str = "", end_date: str = "", authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         return {"items": log_service.list(type=type.strip(), start_date=start_date.strip(), end_date=end_date.strip())}
 
     @router.post("/api/logs/delete")
-    async def delete_logs(body: LogDeleteRequest, authorization: str | None = Header(default=None)):
+    async def delete_logs(body: LogDeleteRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         return log_service.delete(body.ids)
 
     @router.post("/api/proxy/test")
-    async def test_proxy_endpoint(body: ProxyTestRequest, authorization: str | None = Header(default=None)):
+    async def test_proxy_endpoint(body: ProxyTestRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         candidate = (body.url or "").strip() or config.get_proxy_settings()
         if not candidate:
@@ -119,7 +122,7 @@ def create_router(app_version: str) -> APIRouter:
         return {"result": await run_in_threadpool(test_proxy, candidate)}
 
     @router.get("/api/storage/info")
-    async def get_storage_info(authorization: str | None = Header(default=None)):
+    async def get_storage_info(authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         storage = config.get_storage_backend()
         return {
@@ -128,7 +131,7 @@ def create_router(app_version: str) -> APIRouter:
         }
 
     @router.post("/api/backup/test")
-    async def test_backup_connection(authorization: str | None = Header(default=None)):
+    async def test_backup_connection(authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         try:
             return {"result": await run_in_threadpool(backup_service.test_connection)}
@@ -136,7 +139,7 @@ def create_router(app_version: str) -> APIRouter:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
     @router.get("/api/backups")
-    async def get_backups(authorization: str | None = Header(default=None)):
+    async def get_backups(authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         try:
             return {
@@ -148,7 +151,7 @@ def create_router(app_version: str) -> APIRouter:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
     @router.post("/api/backups/run")
-    async def run_backup_endpoint(authorization: str | None = Header(default=None)):
+    async def run_backup_endpoint(authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         try:
             return {"result": await run_in_threadpool(backup_service.run_backup)}
@@ -156,7 +159,7 @@ def create_router(app_version: str) -> APIRouter:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
     @router.post("/api/backups/delete")
-    async def delete_backup_endpoint(body: BackupDeleteRequest, authorization: str | None = Header(default=None)):
+    async def delete_backup_endpoint(body: BackupDeleteRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         try:
             await run_in_threadpool(backup_service.delete_backup, body.key)
@@ -165,7 +168,7 @@ def create_router(app_version: str) -> APIRouter:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
     @router.get("/api/backups/detail")
-    async def get_backup_detail(key: str = "", authorization: str | None = Header(default=None)):
+    async def get_backup_detail(key: str = "", authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         try:
             return {"item": await run_in_threadpool(backup_service.get_backup_detail, key)}
@@ -173,7 +176,7 @@ def create_router(app_version: str) -> APIRouter:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
     @router.get("/api/backups/download")
-    async def download_backup_endpoint(key: str = "", authorization: str | None = Header(default=None)):
+    async def download_backup_endpoint(key: str = "", authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         try:
             item = await run_in_threadpool(backup_service.download_backup, key)
@@ -193,12 +196,12 @@ def create_router(app_version: str) -> APIRouter:
 
 
     @router.get("/api/images/tags")
-    async def list_image_tags(authorization: str | None = Header(default=None)):
+    async def list_image_tags(authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         return {"tags": get_all_tags()}
 
     @router.post("/api/images/tags")
-    async def update_image_tags(body: ImageTagsRequest, authorization: str | None = Header(default=None)):
+    async def update_image_tags(body: ImageTagsRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         rel = body.path.strip().lstrip("/")
         if not rel:
@@ -207,7 +210,7 @@ def create_router(app_version: str) -> APIRouter:
         return {"ok": True, "tags": tags}
 
     @router.delete("/api/images/tags/{tag}")
-    async def delete_image_tag(tag: str, authorization: str | None = Header(default=None)):
+    async def delete_image_tag(tag: str, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         count = delete_tag(tag)
         return {"ok": True, "removed_from": count}

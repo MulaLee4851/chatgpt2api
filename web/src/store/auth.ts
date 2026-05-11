@@ -2,6 +2,8 @@
 
 import localforage from "localforage";
 
+import type { UserKeyPermissions } from "@/lib/api";
+
 export type AuthRole = "admin" | "user";
 
 export type StoredAuthSession = {
@@ -9,6 +11,7 @@ export type StoredAuthSession = {
   role: AuthRole;
   subjectId: string;
   name: string;
+  permissions: UserKeyPermissions;
 };
 
 export const AUTH_KEY_STORAGE_KEY = "chatgpt2api_auth_key";
@@ -31,11 +34,21 @@ function normalizeSession(value: unknown, fallbackKey = ""): StoredAuthSession |
     return null;
   }
 
+  const permissionsCandidate = candidate.permissions;
+  const permissions =
+    permissionsCandidate && typeof permissionsCandidate === "object"
+      ? {
+          chat: Boolean((permissionsCandidate as Partial<UserKeyPermissions>).chat),
+          image: Boolean((permissionsCandidate as Partial<UserKeyPermissions>).image),
+        }
+      : { chat: true, image: true };
+
   return {
     key,
     role,
     subjectId: String(candidate.subjectId || "").trim(),
     name: String(candidate.name || "").trim(),
+    permissions,
   };
 }
 

@@ -21,8 +21,8 @@ const adminNavItems = [
 ];
 
 const userNavItems = [
-  { href: "/gpt-web", label: "对话" },
-  { href: "/image", label: "画图" },
+  { href: "/gpt-web", label: "对话", permission: "chat" as const },
+  { href: "/image", label: "画图", permission: "image" as const },
 ];
 
 export function TopNav() {
@@ -64,7 +64,10 @@ export function TopNav() {
     return null;
   }
 
-  const navItems = session.role === "admin" ? adminNavItems : userNavItems;
+  const navItems =
+    session.role === "admin"
+      ? adminNavItems
+      : userNavItems.filter((item) => session.permissions[item.permission]);
   const roleLabel = session.role === "admin" ? "管理员" : "普通用户";
   const displayName = session.name.trim() || roleLabel;
 

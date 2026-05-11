@@ -204,6 +204,32 @@ function formatUsage(item: UserKey) {
   ].join(" · ");
 }
 
+async function copyText(value: string) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  try {
+    const copied = document.execCommand("copy");
+    if (!copied) {
+      throw new Error("copy failed");
+    }
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 export function UserKeysCard() {
   const didLoadRef = useRef(false);
   const [items, setItems] = useState<UserKey[]>([]);
@@ -374,7 +400,7 @@ export function UserKeysCard() {
 
   const handleCopy = async (value: string) => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyText(value);
       toast.success("已复制到剪贴板");
     } catch {
       toast.error("复制失败，请手动复制");

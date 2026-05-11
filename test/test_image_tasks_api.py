@@ -6,7 +6,7 @@ import types
 import unittest
 from unittest import mock
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 MULTIPART_AVAILABLE = importlib.util.find_spec("python_multipart") is not None or importlib.util.find_spec("multipart") is not None
@@ -114,9 +114,16 @@ class FakeImageTaskService:
 class ImageTasksApiTests(unittest.TestCase):
     def setUp(self):
         self.fake_service = FakeImageTaskService()
+        self.identity = {"id": "user-1", "name": "User", "role": "user"}
         self.service_patcher = mock.patch.object(image_tasks_module, "image_task_service", self.fake_service)
+        self.require_identity_patcher = mock.patch.object(image_tasks_module, "require_identity", return_value=self.identity)
+        self.ensure_image_patcher = mock.patch.object(image_tasks_module, "ensure_identity_can_use_image")
         self.service_patcher.start()
+        self.require_identity = self.require_identity_patcher.start()
+        self.ensure_identity_can_use_image = self.ensure_image_patcher.start()
         self.addCleanup(self.service_patcher.stop)
+        self.addCleanup(self.require_identity_patcher.stop)
+        self.addCleanup(self.ensure_image_patcher.stop)
         app = FastAPI()
         app.include_router(image_tasks_module.create_router())
         self.client = TestClient(app)
@@ -133,6 +140,7 @@ class ImageTasksApiTests(unittest.TestCase):
         self.assertEqual(payload["id"], "task-1")
         self.assertEqual(payload["status"], "success")
         self.assertEqual(len(self.fake_service.generation_calls), 1)
+        self.ensure_identity_can_use_image.assert_called_once_with(self.identity, 1)
 
     @unittest.skipUnless(MULTIPART_AVAILABLE, "python-multipart is not installed")
     def test_create_edit_task_accepts_multiple_images(self):
@@ -149,6 +157,7 @@ class ImageTasksApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["id"], "edit-1")
         self.assertEqual(len(self.fake_service.edit_calls), 1)
+        self.ensure_identity_can_use_image.assert_called_once_with(self.identity, 1)
         images = self.fake_service.edit_calls[0][1]["images"]
         self.assertEqual(len(images), 2)
 
@@ -159,6 +168,19 @@ class ImageTasksApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual([item["id"] for item in payload["items"]], ["task-1"])
         self.assertEqual(payload["missing_ids"], ["missing"])
+
+    def test_create_generation_task_rejects_key_without_image_access(self):
+        self.ensure_identity_can_use_image.side_effect = HTTPException(status_code=403, detail={"error": "当前密钥没有生图权限"})
+
+        response = self.client.post(
+            "/api/image-tasks/generations",
+            headers=AUTH_HEADERS,
+            json={"client_task_id": "task-2", "prompt": "cat", "model": "gpt-image-2"},
+        )
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.json()["detail"]["error"], "当前密钥没有生图权限")
+        self.assertEqual(len(self.fake_service.generation_calls), 0)
 
 
 if __name__ == "__main__":
