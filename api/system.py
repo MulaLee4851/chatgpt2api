@@ -8,7 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from api.support import _ensure_identity_not_expired, require_admin, require_identity, resolve_image_base_url
+from api.support import _ensure_identity_not_expired, _identity_limits, _identity_usage, require_admin, require_identity, resolve_image_base_url
 from services.backup_service import BackupError, backup_service
 from services.config import config
 from services.image_service import delete_images, download_images_zip, get_image_download_response, get_thumbnail_response, list_images
@@ -58,6 +58,8 @@ def create_router(app_version: str) -> APIRouter:
             "subject_id": identity.get("id"),
             "name": identity.get("name"),
             "permissions": identity.get("permissions") or {"chat": True, "image": True},
+            "limits": _identity_limits(identity),
+            "usage": _identity_usage(identity),
         }
 
     @router.get("/version")

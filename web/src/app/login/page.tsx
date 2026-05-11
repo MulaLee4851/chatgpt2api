@@ -34,6 +34,8 @@ export default function LoginPage() {
         subjectId: data.subject_id,
         name: data.name,
         permissions: data.permissions,
+        limits: data.limits,
+        usage: data.usage,
       });
       router.replace(getDefaultRouteForRole(data.role));
     } catch (error) {

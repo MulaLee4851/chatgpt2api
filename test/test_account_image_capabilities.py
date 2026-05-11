@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import sys
 import tempfile
@@ -99,7 +100,9 @@ sys.modules.setdefault("multipart.multipart", fake_multipart_submodule)
 
 import api.accounts as accounts_module
 import api.ai as ai_module
+import api.image_templates as image_templates_module
 import api.system as system_module
+import services.image_template_service as image_template_service_module
 from services.account_service import AccountService
 from services.auth_service import AuthService
 from services.storage.json_storage import JSONStorageBackend
@@ -491,12 +494,14 @@ class SystemLoginTests(unittest.TestCase):
         app.include_router(system_module.create_router("test-version"))
         self.client = TestClient(app)
 
-    def test_login_returns_permissions_for_user_key(self):
+    def test_login_returns_permissions_limits_and_usage_for_user_key(self):
         self.require_identity.return_value = {
             "id": "user-1",
             "name": "Image Only",
             "role": "user",
             "permissions": {"chat": False, "image": True},
+            "limits": {"expires_at": None, "max_tokens": 3000, "max_images": 9},
+            "usage": {"used_tokens": 120, "used_images": 4},
         }
 
         response = self.client.post("/auth/login", headers={"Authorization": "Bearer key"})
@@ -511,6 +516,8 @@ class SystemLoginTests(unittest.TestCase):
                 "subject_id": "user-1",
                 "name": "Image Only",
                 "permissions": {"chat": False, "image": True},
+                "limits": {"expires_at": None, "max_tokens": 3000, "max_images": 9},
+                "usage": {"used_tokens": 120, "used_images": 4},
             },
         )
         self.ensure_not_expired.assert_called_once_with(self.require_identity.return_value)
@@ -533,6 +540,145 @@ class SystemLoginTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403, response.text)
         self.assertEqual(response.json()["detail"]["error"], "当前密钥已过期")
         self.ensure_not_expired.assert_called_once_with(identity)
+
+
+class ImageTemplateServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.templates_file = Path(self.temp_dir.name) / "templates.json"
+        self.assets_dir = Path(self.temp_dir.name) / "assets"
+        self.templates_patcher = mock.patch.object(image_template_service_module, "TEMPLATES_FILE", self.templates_file)
+        self.asset_root_patcher = mock.patch.object(image_template_service_module, "_asset_root", lambda: self.assets_dir)
+        self.templates_patcher.start()
+        self.asset_root_patcher.start()
+        self.addCleanup(self.templates_patcher.stop)
+        self.addCleanup(self.asset_root_patcher.stop)
+        self.service = image_template_service_module.ImageTemplateService()
+
+    def test_replace_asset_stores_file_under_template_asset_root(self):
+        item = self.service.create_item({"name": "Template A", "prompt_template": "draw cat"})
+
+        updated = self.service.replace_asset(item["id"], "reference", "sample.png", io.BytesIO(b"pngdata"))
+
+        self.assertIsNotNone(updated)
+        rel_path = updated["reference_image_rel"]
+        self.assertEqual(rel_path, f"{item['id']}/reference.png")
+        self.assertTrue((self.assets_dir / rel_path).is_file())
+
+    def test_delete_template_removes_only_its_asset_directory(self):
+        first = self.service.create_item({"name": "Template A", "prompt_template": "draw cat"})
+        second = self.service.create_item({"name": "Template B", "prompt_template": "draw dog"})
+        self.service.replace_asset(first["id"], "reference", "sample.png", io.BytesIO(b"first"))
+        self.service.replace_asset(second["id"], "reference", "sample.png", io.BytesIO(b"second"))
+
+        self.assertTrue(self.service.delete_item(first["id"]))
+
+        self.assertFalse((self.assets_dir / first["id"]).exists())
+        self.assertTrue((self.assets_dir / second["id"] / "reference.png").is_file())
+
+
+class FakeImageTemplateService:
+    def __init__(self):
+        self.items = [
+            {
+                "id": "tpl-1",
+                "name": "Poster",
+                "description": "desc",
+                "mode": "generate",
+                "prompt_template": "draw {{prompt}}",
+                "default_count": 1,
+                "default_size": "1:1",
+                "requires_placeholder": True,
+                "placeholder_token": "{{prompt}}",
+                "requires_user_source_image": False,
+                "reference_image_rel": None,
+                "original_image_rel": None,
+                "enabled": True,
+                "created_at": "2026-05-11T00:00:00Z",
+                "updated_at": "2026-05-11T00:00:00Z",
+            }
+        ]
+        self.include_disabled_calls = []
+
+    def list_items(self, *, include_disabled=True):
+        self.include_disabled_calls.append(include_disabled)
+        return list(self.items)
+
+    def create_item(self, payload):
+        item = {**self.items[0], **payload, "id": "tpl-2"}
+        self.items.append(item)
+        return item
+
+    def update_item(self, template_id, payload):
+        return {**self.items[0], **payload, "id": template_id}
+
+    def delete_item(self, template_id):
+        return template_id == "tpl-1"
+
+    def replace_asset(self, template_id, kind, filename, fileobj):
+        return {**self.items[0], "id": template_id, "reference_image_rel": f"{template_id}/{kind}.png"}
+
+    def delete_asset(self, template_id, kind):
+        return {**self.items[0], "id": template_id, "reference_image_rel": None}
+
+    def serialize_item(self, item, base_url):
+        return {
+            **item,
+            "reference_image_url": f"{base_url}/template-images/{item['id']}/reference.png" if item.get("reference_image_rel") else None,
+            "original_image_url": f"{base_url}/template-images/{item['id']}/original.png" if item.get("original_image_rel") else None,
+        }
+
+
+class ImageTemplatesApiTests(unittest.TestCase):
+    def setUp(self):
+        self.fake_service = FakeImageTemplateService()
+        self.require_identity_patcher = mock.patch.object(image_templates_module, "require_identity")
+        self.require_admin_patcher = mock.patch.object(image_templates_module, "require_admin", return_value={"id": "admin"})
+        self.resolve_base_url_patcher = mock.patch.object(image_templates_module, "resolve_image_base_url", return_value="https://example.com")
+        self.service_patcher = mock.patch.object(image_templates_module, "image_template_service", self.fake_service)
+        self.require_identity = self.require_identity_patcher.start()
+        self.require_admin_patcher.start()
+        self.resolve_base_url_patcher.start()
+        self.service_patcher.start()
+        self.addCleanup(self.require_identity_patcher.stop)
+        self.addCleanup(self.require_admin_patcher.stop)
+        self.addCleanup(self.resolve_base_url_patcher.stop)
+        self.addCleanup(self.service_patcher.stop)
+        app = FastAPI()
+        app.include_router(image_templates_module.create_router())
+        self.client = TestClient(app)
+
+    def test_list_templates_hides_disabled_items_for_non_admin_identity(self):
+        self.require_identity.return_value = {"id": "user-1", "role": "user"}
+
+        response = self.client.get("/api/image-templates", headers={"Authorization": "Bearer key"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.fake_service.include_disabled_calls[-1], False)
+        self.assertEqual(response.json()["items"][0]["id"], "tpl-1")
+
+    def test_create_template_returns_item_and_full_list(self):
+        response = self.client.post(
+            "/api/image-templates",
+            headers={"Authorization": "Bearer key"},
+            json={
+                "name": "Poster 2",
+                "description": "desc",
+                "mode": "generate",
+                "prompt_template": "draw {{prompt}}",
+                "default_count": 1,
+                "default_size": "1:1",
+                "requires_placeholder": True,
+                "placeholder_token": "{{prompt}}",
+                "requires_user_source_image": False,
+                "enabled": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["item"]["id"], "tpl-2")
+        self.assertGreaterEqual(len(response.json()["items"]), 1)
 
 
 if __name__ == "__main__":

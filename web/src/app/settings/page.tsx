@@ -9,6 +9,7 @@ import { BackupSettingsCard } from "./components/backup-settings-card";
 import { ConfigCard } from "./components/config-card";
 import { CPAPoolDialog } from "./components/cpa-pool-dialog";
 import { CPAPoolsCard } from "./components/cpa-pools-card";
+import { ImageTemplatesCard } from "./components/image-templates-card";
 import { ImportBrowserDialog } from "./components/import-browser-dialog";
 import { SettingsHeader } from "./components/settings-header";
 import { Sub2APIConnections } from "./components/sub2api-connections";
@@ -68,6 +69,7 @@ function SettingsPageContent() {
         <ConfigCard />
         <BackupSettingsCard />
         <UserKeysCard />
+        <ImageTemplatesCard />
         <CPAPoolsCard />
         <Sub2APIConnections />
       </section>

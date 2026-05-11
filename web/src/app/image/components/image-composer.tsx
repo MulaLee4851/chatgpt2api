@@ -5,16 +5,23 @@ import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type RefObje
 import { ImageLightbox } from "@/components/image-lightbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import type { ImageTemplate } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type ImageComposerProps = {
   prompt: string;
   imageCount: string;
+  maxImageCount: number;
   imageSize: string;
   availableQuota: string;
   activeTaskCount: number;
   referenceImages: Array<{ name: string; dataUrl: string }>;
+  templates: ImageTemplate[];
+  selectedTemplateId: string;
+  templatePromptValue: string;
+  isLoadingTemplates: boolean;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   fileInputRef: RefObject<HTMLInputElement | null>;
   onPromptChange: (value: string) => void;
@@ -24,15 +31,22 @@ type ImageComposerProps = {
   onPickReferenceImage: () => void;
   onReferenceImageChange: (files: File[]) => void | Promise<void>;
   onRemoveReferenceImage: (index: number) => void;
+  onTemplateChange: (value: string) => void;
+  onTemplatePromptValueChange: (value: string) => void;
 };
 
 export function ImageComposer({
   prompt,
   imageCount,
+  maxImageCount,
   imageSize,
   availableQuota,
   activeTaskCount,
   referenceImages,
+  templates,
+  selectedTemplateId,
+  templatePromptValue,
+  isLoadingTemplates,
   textareaRef,
   fileInputRef,
   onPromptChange,
@@ -42,6 +56,8 @@ export function ImageComposer({
   onPickReferenceImage,
   onReferenceImageChange,
   onRemoveReferenceImage,
+  onTemplateChange,
+  onTemplatePromptValueChange,
 }: ImageComposerProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -62,6 +78,10 @@ export function ImageComposer({
     { value: "9:16", label: "9:16 (竖版)" },
   ];
   const imageSizeLabel = imageSizeOptions.find((option) => option.value === imageSize)?.label || "未指定";
+  const selectedTemplate = useMemo(
+    () => templates.find((template) => template.id === selectedTemplateId) ?? null,
+    [selectedTemplateId, templates],
+  );
 
   useEffect(() => {
     if (!isSizeMenuOpen) {
@@ -101,6 +121,40 @@ export function ImageComposer({
             void onReferenceImageChange(Array.from(event.target.files || []));
           }}
         />
+
+        <div className="mb-2 grid gap-2 px-1 sm:mb-3 sm:grid-cols-[minmax(0,240px)_minmax(0,1fr)] sm:items-start sm:gap-3 sm:px-0">
+          <Select value={selectedTemplateId || "__none__"} onValueChange={(value) => onTemplateChange(value === "__none__" ? "" : value)}>
+            <SelectTrigger className="h-10 rounded-2xl border-stone-200 bg-white text-sm shadow-none">
+              <SelectValue placeholder={isLoadingTemplates ? "模板加载中..." : "选择模板"} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">不使用模板</SelectItem>
+              {templates.map((template) => (
+                <SelectItem key={template.id} value={template.id}>
+                  {template.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {selectedTemplate ? (
+            <div className="rounded-2xl border border-stone-200 bg-white px-3 py-2 text-xs leading-5 text-stone-500">
+              <div>{selectedTemplate.mode === "edit" ? "图生图模板" : "文生图模板"}{selectedTemplate.default_size ? ` · ${selectedTemplate.default_size}` : ""}</div>
+              {selectedTemplate.original_image_url ? <div className="mt-1">已配置模板原图预览</div> : null}
+              {selectedTemplate.requires_user_source_image ? <div className="mt-1 text-amber-700">提交前还需要上传待处理原图</div> : null}
+            </div>
+          ) : null}
+        </div>
+
+        {selectedTemplate?.requires_placeholder ? (
+          <div className="mb-2 px-1 sm:mb-3 sm:px-0">
+            <Input
+              value={templatePromptValue}
+              onChange={(event) => onTemplatePromptValueChange(event.target.value)}
+              placeholder={`填写模板变量 ${selectedTemplate.placeholder_token}`}
+              className="h-11 rounded-2xl border-stone-200 bg-white"
+            />
+          </div>
+        ) : null}
 
         {referenceImages.length > 0 ? (
           <div className="mb-2 flex gap-2 overflow-x-auto px-1 pb-1 sm:mb-3 sm:flex-wrap sm:overflow-visible sm:pb-0">
@@ -198,7 +252,7 @@ export function ImageComposer({
                       type="number"
                       inputMode="numeric"
                       min="1"
-                      max="100"
+                      max={String(maxImageCount)}
                       step="1"
                       value={imageCount}
                       onChange={(event) => onImageCountChange(event.target.value)}

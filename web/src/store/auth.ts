@@ -2,7 +2,7 @@
 
 import localforage from "localforage";
 
-import type { UserKeyPermissions } from "@/lib/api";
+import type { UserKeyLimits, UserKeyPermissions, UserKeyUsage } from "@/lib/api";
 
 export type AuthRole = "admin" | "user";
 
@@ -12,6 +12,8 @@ export type StoredAuthSession = {
   subjectId: string;
   name: string;
   permissions: UserKeyPermissions;
+  limits: UserKeyLimits;
+  usage: UserKeyUsage;
 };
 
 export const AUTH_KEY_STORAGE_KEY = "chatgpt2api_auth_key";
@@ -43,12 +45,39 @@ function normalizeSession(value: unknown, fallbackKey = ""): StoredAuthSession |
         }
       : { chat: true, image: true };
 
+  const limitsCandidate = candidate.limits;
+  const limits =
+    limitsCandidate && typeof limitsCandidate === "object"
+      ? {
+          expires_at: String((limitsCandidate as Partial<UserKeyLimits>).expires_at || "").trim() || null,
+          max_tokens:
+            (limitsCandidate as Partial<UserKeyLimits>).max_tokens == null
+              ? null
+              : Math.max(0, Number((limitsCandidate as Partial<UserKeyLimits>).max_tokens) || 0),
+          max_images:
+            (limitsCandidate as Partial<UserKeyLimits>).max_images == null
+              ? null
+              : Math.max(0, Number((limitsCandidate as Partial<UserKeyLimits>).max_images) || 0),
+        }
+      : { expires_at: null, max_tokens: null, max_images: null };
+
+  const usageCandidate = candidate.usage;
+  const usage =
+    usageCandidate && typeof usageCandidate === "object"
+      ? {
+          used_tokens: Math.max(0, Number((usageCandidate as Partial<UserKeyUsage>).used_tokens) || 0),
+          used_images: Math.max(0, Number((usageCandidate as Partial<UserKeyUsage>).used_images) || 0),
+        }
+      : { used_tokens: 0, used_images: 0 };
+
   return {
     key,
     role,
     subjectId: String(candidate.subjectId || "").trim(),
     name: String(candidate.name || "").trim(),
     permissions,
+    limits,
+    usage,
   };
 }
 

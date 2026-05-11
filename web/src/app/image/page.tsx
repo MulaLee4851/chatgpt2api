@@ -20,12 +20,14 @@ import { Button } from "@/components/ui/button";
 import {
   createImageEditTask,
   createImageGenerationTask,
-  fetchAccounts,
   fetchImageTasks,
-  type Account,
+  fetchImageTemplates,
   type ImageTask,
+  type ImageTemplate,
 } from "@/lib/api";
+import { getValidatedAuthSession } from "@/lib/auth-session";
 import { useAuthGuard } from "@/lib/use-auth-guard";
+import type { StoredAuthSession } from "@/store/auth";
 import {
   clearImageConversations,
   deleteImageConversation,
@@ -46,8 +48,9 @@ const ACTIVE_CONVERSATION_STORAGE_KEY = "chatgpt2api:image_active_conversation_i
 const IMAGE_SIZE_STORAGE_KEY = "chatgpt2api:image_last_size";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
 
-function clampImageCount(value: string) {
-  return String(Math.min(100, Math.max(1, Math.floor(Number(value) || 1))));
+function clampImageCount(value: string, maxCount = 100) {
+  const normalizedMax = Math.max(1, Math.floor(Number(maxCount) || 1));
+  return String(Math.min(normalizedMax, Math.max(1, Math.floor(Number(value) || 1))));
 }
 const activeConversationQueueIds = new Set<string>();
 
@@ -72,9 +75,25 @@ function formatConversationTime(value: string) {
   }).format(date);
 }
 
-function formatAvailableQuota(accounts: Account[]) {
-  const availableAccounts = accounts.filter((account) => account.status !== "禁用");
-  return String(availableAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0));
+function getRemainingImages(session: StoredAuthSession | null) {
+  if (!session || !session.permissions.image) {
+    return 0;
+  }
+  if (session.limits.max_images == null) {
+    return null;
+  }
+  return Math.max(0, session.limits.max_images - session.usage.used_images);
+}
+
+function formatAvailableQuota(session: StoredAuthSession | null) {
+  if (!session) {
+    return "加载中...";
+  }
+  if (!session.permissions.image) {
+    return "不可用";
+  }
+  const remainingImages = getRemainingImages(session);
+  return remainingImages == null ? "无限" : String(remainingImages);
 }
 
 function createId() {
@@ -138,6 +157,18 @@ async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: 
     return null;
   }
   const file = await fetchImageAsFile(image.url, fileName);
+  return {
+    referenceImage: {
+      name: file.name,
+      type: file.type || "image/png",
+      dataUrl: await readFileAsDataUrl(file),
+    },
+    file,
+  };
+}
+
+async function buildReferenceImageFromTemplate(url: string, fileName: string) {
+  const file = await fetchImageAsFile(url, fileName);
   return {
     referenceImage: {
       name: file.name,
@@ -337,23 +368,28 @@ async function recoverConversationHistory(items: ImageConversation[]) {
 }
 
 
-function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
-  const didLoadQuotaRef = useRef(false);
+function ImagePageContent({ session }: { session: StoredAuthSession }) {
+  const didLoadSessionRef = useRef(false);
   const conversationsRef = useRef<ImageConversation[]>([]);
   const resultsViewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [authSession, setAuthSession] = useState(session);
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageCount, setImageCount] = useState("1");
   const [imageSize, setImageSize] = useState("");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
+  const [referenceImageSources, setReferenceImageSources] = useState<Array<"user" | "template" | "history">>([]);
+  const [templates, setTemplates] = useState<ImageTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [templatePromptValue, setTemplatePromptValue] = useState("");
   const [conversations, setConversations] = useState<ImageConversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
-  const [availableQuota, setAvailableQuota] = useState("加载中...");
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(true);
   const [lightboxImages, setLightboxImages] = useState<ImageLightboxItem[]>([]);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -365,7 +401,19 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     | null
   >(null);
 
-  const parsedCount = useMemo(() => Number(clampImageCount(imageCount)), [imageCount]);
+  const remainingImages = useMemo(() => getRemainingImages(authSession), [authSession]);
+  const availableQuota = useMemo(() => formatAvailableQuota(authSession), [authSession]);
+  const maxSelectableImageCount = useMemo(() => {
+    if (remainingImages == null) {
+      return 100;
+    }
+    return Math.max(1, Math.min(100, remainingImages));
+  }, [remainingImages]);
+  const parsedCount = useMemo(() => Number(clampImageCount(imageCount, maxSelectableImageCount)), [imageCount, maxSelectableImageCount]);
+  const selectedTemplate = useMemo(
+    () => templates.find((item) => item.id === selectedTemplateId) ?? null,
+    [templates, selectedTemplateId],
+  );
   const selectedConversation = useMemo(
     () => conversations.find((item) => item.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId],
@@ -404,6 +452,10 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   }, [conversations]);
 
   useEffect(() => {
+    setAuthSession(session);
+  }, [session]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const loadHistory = async () => {
@@ -411,7 +463,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         const storedSize = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_SIZE_STORAGE_KEY) : null;
         const storedCount = typeof window !== "undefined" ? window.localStorage.getItem(IMAGE_COUNT_STORAGE_KEY) : null;
         setImageSize(storedSize || "");
-        setImageCount(storedCount ? clampImageCount(storedCount) : "1");
+        setImageCount(storedCount ? clampImageCount(storedCount, maxSelectableImageCount) : "1");
 
         const items = await listImageConversations();
         const normalizedItems = await recoverConversationHistory(items);
@@ -444,35 +496,59 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     };
   }, []);
 
-  const loadQuota = useCallback(async () => {
-    if (!isAdmin) {
-      setAvailableQuota("--");
-      return;
-    }
-    try {
-      const data = await fetchAccounts();
-      setAvailableQuota(formatAvailableQuota(data.items));
-    } catch {
-      setAvailableQuota((prev) => (prev === "加载中..." ? "--" : prev));
-    }
-  }, [isAdmin]);
+  useEffect(() => {
+    setImageCount((current) => clampImageCount(current || "1", maxSelectableImageCount));
+  }, [maxSelectableImageCount]);
 
   useEffect(() => {
-    if (didLoadQuotaRef.current) {
-      return;
-    }
-    didLoadQuotaRef.current = true;
-
-    const handleFocus = () => {
-      void loadQuota();
+    let cancelled = false;
+    const loadTemplates = async () => {
+      setIsLoadingTemplates(true);
+      try {
+        const data = await fetchImageTemplates();
+        if (!cancelled) {
+          setTemplates(data.items);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          toast.error(error instanceof Error ? error.message : "加载模板失败");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingTemplates(false);
+        }
+      }
     };
 
-    void loadQuota();
+    void loadTemplates();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const refreshSession = useCallback(async () => {
+    const latest = await getValidatedAuthSession();
+    if (latest) {
+      setAuthSession(latest);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (didLoadSessionRef.current) {
+      return;
+    }
+    didLoadSessionRef.current = true;
+
+    const handleFocus = () => {
+      void refreshSession();
+    };
+
+    void refreshSession();
     window.addEventListener("focus", handleFocus);
     return () => {
       window.removeEventListener("focus", handleFocus);
     };
-  }, [isAdmin, loadQuota]);
+  }, [refreshSession]);
 
   useEffect(() => {
     if (!selectedConversation) {
@@ -554,16 +630,114 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
   const clearComposerInputs = useCallback(() => {
     setImagePrompt("");
+    setTemplatePromptValue("");
+    setSelectedTemplateId("");
     setReferenceImageFiles([]);
     setReferenceImages([]);
+    setReferenceImageSources([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   }, []);
 
+  const clearSelectedTemplate = useCallback(() => {
+    setSelectedTemplateId("");
+    setTemplatePromptValue("");
+    setReferenceImageFiles((prev) => prev.filter((_, index) => referenceImageSources[index] !== "template"));
+    setReferenceImages((prev) => prev.filter((_, index) => referenceImageSources[index] !== "template"));
+    setReferenceImageSources((prev) => prev.filter((source) => source !== "template"));
+    if (!referenceImageSources.some((source) => source !== "template") && fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }, [referenceImageSources]);
+
   const resetComposer = useCallback(() => {
     clearComposerInputs();
   }, [clearComposerInputs]);
+
+  const ensureCanQueueImages = useCallback(
+    (count: number) => {
+      if (!authSession.permissions.image) {
+        toast.error("当前密钥没有生图权限");
+        return false;
+      }
+      if (remainingImages != null && remainingImages <= 0) {
+        toast.error("当前密钥的图片额度已用完");
+        return false;
+      }
+      if (remainingImages != null && count > remainingImages) {
+        toast.error(`当前密钥最多还能生成 ${remainingImages} 张图片`);
+        return false;
+      }
+      return true;
+    },
+    [authSession.permissions.image, remainingImages],
+  );
+
+  const buildEffectivePrompt = useCallback(() => {
+    const basePrompt = imagePrompt.trim();
+    if (!selectedTemplate?.requires_placeholder) {
+      return basePrompt;
+    }
+    const placeholderValue = templatePromptValue.trim();
+    if (!placeholderValue) {
+      throw new Error("请先填写模板要求的关键字内容");
+    }
+    if (!basePrompt.includes(selectedTemplate.placeholder_token)) {
+      throw new Error("当前模板提示词缺少占位符");
+    }
+    return basePrompt.replaceAll(selectedTemplate.placeholder_token, placeholderValue);
+  }, [imagePrompt, selectedTemplate, templatePromptValue]);
+
+  const applyTemplate = useCallback(
+    async (templateId: string) => {
+      if (!templateId) {
+        clearSelectedTemplate();
+        return;
+      }
+      const template = templates.find((item) => item.id === templateId);
+      if (!template) {
+        return;
+      }
+      try {
+        const templateAssets: Array<{ referenceImage: StoredReferenceImage; file: File }> = [];
+        if (template.mode === "edit" && !template.requires_user_source_image && template.original_image_url) {
+          templateAssets.push(
+            await buildReferenceImageFromTemplate(
+              template.original_image_url,
+              `${template.name || "template"}-original.png`,
+            ),
+          );
+        }
+        if (template.reference_image_url) {
+          templateAssets.push(
+            await buildReferenceImageFromTemplate(
+              template.reference_image_url,
+              `${template.name || "template"}-reference.png`,
+            ),
+          );
+        }
+
+        setSelectedTemplateId(template.id);
+        setTemplatePromptValue("");
+        setImagePrompt(template.prompt_template);
+        setImageCount(clampImageCount(String(template.default_count || 1), maxSelectableImageCount));
+        setImageSize(template.default_size || "");
+        setReferenceImages(templateAssets.map((item) => item.referenceImage));
+        setReferenceImageFiles(templateAssets.map((item) => item.file));
+        setReferenceImageSources(templateAssets.map(() => "template"));
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
+        textareaRef.current?.focus();
+        toast.success(`已应用模板：${template.name}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "应用模板失败";
+        toast.error(message);
+      }
+    },
+    [clearSelectedTemplate, maxSelectableImageCount, templates],
+  );
 
   const handleCreateDraft = () => {
     setSelectedConversationId(null);
@@ -693,7 +867,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     await handleDeleteConversation(target.id);
   };
 
-  const appendReferenceImages = useCallback(async (files: File[]) => {
+  const appendReferenceImages = useCallback(async (files: File[], source: "user" | "template" | "history" = "user") => {
     if (files.length === 0) {
       return;
     }
@@ -709,6 +883,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
       setReferenceImageFiles((prev) => [...prev, ...files]);
       setReferenceImages((prev) => [...prev, ...previews]);
+      setReferenceImageSources((prev) => [...prev, ...files.map(() => source)]);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -738,6 +913,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       return next;
     });
     setReferenceImages((prev) => prev.filter((_, currentIndex) => currentIndex !== index));
+    setReferenceImageSources((prev) => prev.filter((_, currentIndex) => currentIndex !== index));
   }, []);
 
   const handleContinueEdit = useCallback(
@@ -755,9 +931,12 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         }
 
         setSelectedConversationId(conversationId);
+        setSelectedTemplateId("");
+        setTemplatePromptValue("");
 
         setReferenceImages((prev) => [...prev, nextReference.referenceImage]);
         setReferenceImageFiles((prev) => [...prev, nextReference.file]);
+        setReferenceImageSources((prev) => [...prev, "history"]);
         setImagePrompt("");
         textareaRef.current?.focus();
         toast.success("已加入当前参考图，继续输入描述即可编辑");
@@ -777,19 +956,22 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     }
 
     setSelectedConversationId(conversationId);
+    setSelectedTemplateId("");
+    setTemplatePromptValue("");
     setImagePrompt(turn.prompt);
-    setImageCount(String(Math.max(1, turn.count || turn.images.length || 1)));
+    setImageCount(clampImageCount(String(Math.max(1, turn.count || turn.images.length || 1)), maxSelectableImageCount));
     setImageSize(turn.size);
     setReferenceImages(turn.referenceImages);
     setReferenceImageFiles(
       turn.referenceImages.map((image) => dataUrlToFile(image.dataUrl, image.name, image.type)),
     );
+    setReferenceImageSources(turn.referenceImages.map(() => "history"));
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
     textareaRef.current?.focus();
     toast.success("已复用这条提示词配置");
-  }, []);
+  }, [maxSelectableImageCount]);
 
   const openLightbox = useCallback((images: ImageLightboxItem[], index: number) => {
     if (images.length === 0) {
@@ -929,7 +1111,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           }
         }
 
-        await loadQuota();
+        await refreshSession();
       } catch (error) {
         const message = error instanceof Error ? error.message : "生成图片失败";
         await updateConversation(conversationId, (current) => {
@@ -968,7 +1150,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         }
       }
     },
-    [loadQuota, updateConversation],
+    [refreshSession, updateConversation],
   );
   /* eslint-enable react-hooks/preserve-manual-memoization */
 
@@ -983,6 +1165,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       const now = new Date().toISOString();
       const nextTurnId = createId();
       const count = Math.max(1, sourceTurn.count || sourceTurn.images.length || 1);
+      if (!ensureCanQueueImages(count)) {
+        return;
+      }
       const nextTurn: ImageTurn = {
         id: nextTurnId,
         prompt: sourceTurn.prompt,
@@ -1006,7 +1191,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       void runConversationQueue(conversationId);
       toast.success("已加入重新生成队列");
     },
-    [runConversationQueue],
+    [ensureCanQueueImages, runConversationQueue],
   );
 
   const handleRetryImage = useCallback(
@@ -1018,6 +1203,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
       const now = new Date().toISOString();
       const retryImageId = `${turnId}-${createId()}`;
+      if (!ensureCanQueueImages(1)) {
+        return;
+      }
       const nextConversation = {
         ...conversation,
         updatedAt: now,
@@ -1051,7 +1239,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       await persistConversation(nextConversation);
       void runConversationQueue(conversationId);
     },
-    [runConversationQueue],
+    [ensureCanQueueImages, runConversationQueue],
   );
 
   useEffect(() => {
@@ -1071,13 +1259,31 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   }, [conversations, runConversationQueue]);
 
   const handleSubmit = async () => {
-    const prompt = imagePrompt.trim();
+    let prompt = "";
+    try {
+      prompt = buildEffectivePrompt().trim();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "模板提示词处理失败");
+      return;
+    }
     if (!prompt) {
       toast.error("请输入提示词");
       return;
     }
+    if (!ensureCanQueueImages(parsedCount)) {
+      return;
+    }
 
-    const effectiveImageMode: ImageConversationMode = referenceImageFiles.length > 0 ? "edit" : "generate";
+    const effectiveImageMode: ImageConversationMode =
+      selectedTemplate?.mode === "edit" || referenceImageFiles.length > 0 ? "edit" : "generate";
+    if (selectedTemplate?.requires_user_source_image && !referenceImageSources.includes("user")) {
+      toast.error("这个模板需要额外上传待处理原图");
+      return;
+    }
+    if (effectiveImageMode === "edit" && referenceImageFiles.length === 0) {
+      toast.error("请先上传待处理图片或应用带参考图的模板");
+      return;
+    }
 
     const targetConversation = selectedConversationId
       ? conversationsRef.current.find((conversation) => conversation.id === selectedConversationId) ?? null
@@ -1223,19 +1429,28 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           <ImageComposer
             prompt={imagePrompt}
             imageCount={imageCount}
+            maxImageCount={maxSelectableImageCount}
             imageSize={imageSize}
             availableQuota={availableQuota}
             activeTaskCount={activeTaskCount}
             referenceImages={referenceImages}
+            templates={templates}
+            selectedTemplateId={selectedTemplateId}
+            templatePromptValue={templatePromptValue}
+            isLoadingTemplates={isLoadingTemplates}
             textareaRef={textareaRef}
             fileInputRef={fileInputRef}
             onPromptChange={setImagePrompt}
-            onImageCountChange={(value) => setImageCount(value ? clampImageCount(value) : "")}
+            onImageCountChange={(value) => setImageCount(value ? clampImageCount(value, maxSelectableImageCount) : "")}
             onImageSizeChange={setImageSize}
             onSubmit={handleSubmit}
             onPickReferenceImage={() => fileInputRef.current?.click()}
             onReferenceImageChange={handleReferenceImageChange}
             onRemoveReferenceImage={handleRemoveReferenceImage}
+            onTemplateChange={(value) => {
+              void applyTemplate(value);
+            }}
+            onTemplatePromptValueChange={setTemplatePromptValue}
           />
         </div>
       </section>
@@ -1283,5 +1498,5 @@ export default function ImagePage() {
     );
   }
 
-  return <ImagePageContent isAdmin={session.role === "admin"} />;
+  return <ImagePageContent session={session} />;
 }

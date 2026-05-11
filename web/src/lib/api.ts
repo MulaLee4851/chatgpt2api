@@ -236,15 +236,6 @@ export type UserKeyPermissions = {
   image: boolean;
 };
 
-export type LoginResponse = {
-  ok: boolean;
-  version: string;
-  role: AuthRole;
-  subject_id: string;
-  name: string;
-  permissions: UserKeyPermissions;
-};
-
 export type UserKeyLimits = {
   expires_at: string | null;
   max_tokens: number | null;
@@ -254,6 +245,50 @@ export type UserKeyLimits = {
 export type UserKeyUsage = {
   used_tokens: number;
   used_images: number;
+};
+
+export type LoginResponse = {
+  ok: boolean;
+  version: string;
+  role: AuthRole;
+  subject_id: string;
+  name: string;
+  permissions: UserKeyPermissions;
+  limits: UserKeyLimits;
+  usage: UserKeyUsage;
+};
+
+export type ImageTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  mode: "generate" | "edit";
+  prompt_template: string;
+  default_count: number;
+  default_size: string;
+  requires_placeholder: boolean;
+  placeholder_token: string;
+  requires_user_source_image: boolean;
+  reference_image_rel: string | null;
+  reference_image_url: string | null;
+  original_image_rel: string | null;
+  original_image_url: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ImageTemplatePayload = {
+  name: string;
+  description: string;
+  mode: "generate" | "edit";
+  prompt_template: string;
+  default_count: number;
+  default_size: string;
+  requires_placeholder: boolean;
+  placeholder_token: string;
+  requires_user_source_image: boolean;
+  enabled: boolean;
 };
 
 export type UserKey = {
@@ -451,6 +486,45 @@ export async function fetchImageTasks(ids: string[]) {
     params.set("ids", ids.join(","));
   }
   return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`);
+}
+
+export async function fetchImageTemplates() {
+  return httpRequest<{ items: ImageTemplate[] }>("/api/image-templates");
+}
+
+export async function createImageTemplate(body: ImageTemplatePayload) {
+  return httpRequest<{ item: ImageTemplate; items: ImageTemplate[] }>("/api/image-templates", {
+    method: "POST",
+    body,
+  });
+}
+
+export async function updateImageTemplate(templateId: string, body: ImageTemplatePayload) {
+  return httpRequest<{ item: ImageTemplate; items: ImageTemplate[] }>(`/api/image-templates/${templateId}`, {
+    method: "POST",
+    body,
+  });
+}
+
+export async function deleteImageTemplate(templateId: string) {
+  return httpRequest<{ items: ImageTemplate[] }>(`/api/image-templates/${templateId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function uploadImageTemplateAsset(templateId: string, kind: "reference" | "original", file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/assets/${kind}`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function deleteImageTemplateAsset(templateId: string, kind: "reference" | "original") {
+  return httpRequest<{ item: ImageTemplate }>(`/api/image-templates/${templateId}/assets/${kind}`, {
+    method: "DELETE",
+  });
 }
 
 export async function createGptWebChatCompletion(messages: GptWebChatMessage[]) {
