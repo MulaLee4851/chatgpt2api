@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 import { LoaderCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -27,14 +29,103 @@ function flattenSources(message: GptWebStoredMessage): GptWebSourceItem[] {
   return items;
 }
 
-function stripCitationPlaceholders(content: string) {
+function extractEntityLabel(rawValue: string) {
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) {
+      return "";
+    }
+    const label =
+      parsed.find((value, index) => index > 0 && typeof value === "string" && value.trim()) ||
+      parsed.find((value) => typeof value === "string" && value.trim());
+    return typeof label === "string" ? label.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function cleanTextSegment(content: string) {
   return content
     .replace(/citeturn\d+search\d+/g, "")
+    .replace(/citeturn\d+news\d+/g, "")
+    .replace(/navlist[^]*?/g, "")
+    .replace(/turn\d+(?:search|news)\d+(?:turn\d+(?:search|news)\d+)*/g, "")
+    .replace(/,?\s*turn\d+(?:search|news)\d+(?=,|$)/g, "")
     .replace(/cite/g, "")
+    .replace(/(?:url|entity|navlist)/g, "")
     .replace(//g, "")
+    .replace(//g, " ")
     .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .replace(/\n[ \t]*\n[ \t]*\n+/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ");
+}
+
+function buildSourceRefMap(sources: GptWebSourceItem[]) {
+  const sourceRefMap = new Map<string, GptWebSourceItem>();
+  for (const source of sources) {
+    for (const refIndex of source.ref_indices || []) {
+      const key = String(refIndex || "").trim();
+      if (key && !sourceRefMap.has(key)) {
+        sourceRefMap.set(key, source);
+      }
+    }
+  }
+  return sourceRefMap;
+}
+
+function renderMessageContent(content: string, sources: GptWebSourceItem[]) {
+  const sourceRefMap = buildSourceRefMap(sources);
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /url([^]+)(https?:\/\/[^\s]+|turn\d+(?:search|news)\d+)(?:[^]*)??|entity(\[[^\]]+\])?|navlist[^]*?|citeturn\d+(?:search|news)\d+?/g;
+  let lastIndex = 0;
+
+  for (const match of content.matchAll(tokenPattern)) {
+    const index = match.index ?? 0;
+    const prefix = cleanTextSegment(content.slice(lastIndex, index));
+    if (prefix) {
+      nodes.push(prefix);
+    }
+
+    const token = match[0] || "";
+    const label = String(match[1] || "").trim();
+    const target = String(match[2] || "").trim();
+    const entity = String(match[3] || "").trim();
+
+    if (token.startsWith("url")) {
+      const source = sourceRefMap.get(target);
+      const href = source?.url || (target.startsWith("http://") || target.startsWith("https://") ? target : "");
+      const text = label || source?.title || href;
+      if (href && text) {
+        nodes.push(
+          <a
+            key={`inline-link-${index}`}
+            href={href}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="underline decoration-stone-300 underline-offset-4 transition hover:decoration-stone-500"
+          >
+            {text}
+          </a>,
+        );
+      } else if (text) {
+        nodes.push(text);
+      }
+    } else if (token.startsWith("entity")) {
+      const text = extractEntityLabel(entity);
+      if (text) {
+        nodes.push(text);
+      }
+    }
+
+    lastIndex = index + token.length;
+  }
+
+  const suffix = cleanTextSegment(content.slice(lastIndex)).replace(/\n{3,}/g, "\n\n");
+  if (suffix.trim()) {
+    nodes.push(suffix);
+  }
+
+  return nodes.length > 0 ? nodes : cleanTextSegment(content).replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function MessageBubble({ message, formatConversationTime }: { message: GptWebStoredMessage; formatConversationTime: (value: string) => string }) {
@@ -42,7 +133,7 @@ function MessageBubble({ message, formatConversationTime }: { message: GptWebSto
   const isPending = message.status === "pending";
   const isError = message.status === "error";
   const sources = isUser || isPending || isError ? [] : flattenSources(message);
-  const renderedContent = stripCitationPlaceholders(message.content || (isError ? message.error || "请求失败" : ""));
+  const renderedContent = renderMessageContent(message.content || (isError ? message.error || "请求失败" : ""), sources);
 
   return (
     <div className={cn("flex w-full", isUser ? "justify-end" : "justify-start")}>
