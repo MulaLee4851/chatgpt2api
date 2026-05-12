@@ -314,18 +314,18 @@ class AccountService:
             raise
         return self.update_account(access_token, result)
 
-    def refresh_accounts(self, access_tokens: list[str]) -> dict[str, Any]:
+    def _refresh_accounts(self, access_tokens: list[str], worker_count: int | None = None, event: str = "refresh_accounts") -> dict[str, Any]:
         access_tokens = list(dict.fromkeys(token for token in access_tokens if token))
         if not access_tokens:
             return {"refreshed": 0, "errors": [], "items": self.list_accounts()}
 
         refreshed = 0
         errors = []
-        max_workers = min(10, len(access_tokens))
+        max_workers = max(1, min(int(worker_count or 10), len(access_tokens)))
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(self.fetch_remote_info, token, "refresh_accounts"): token
+                executor.submit(self.fetch_remote_info, token, event): token
                 for token in access_tokens
             }
             for future in as_completed(futures):
@@ -342,6 +342,12 @@ class AccountService:
             "errors": errors,
             "items": self.list_accounts(),
         }
+
+    def refresh_accounts(self, access_tokens: list[str], worker_count: int | None = None) -> dict[str, Any]:
+        return self._refresh_accounts(access_tokens, worker_count=worker_count, event="refresh_accounts")
+
+    def refresh_all_accounts(self, worker_count: int | None = None) -> dict[str, Any]:
+        return self._refresh_accounts(self.list_tokens(), worker_count=worker_count, event="refresh_all_accounts")
 
 
 account_service = AccountService(config.get_storage_backend())

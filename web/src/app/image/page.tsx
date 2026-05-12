@@ -1375,7 +1375,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
   return (
     <>
       <section className="mx-auto grid h-[calc(100dvh-6.5rem)] min-h-0 w-full max-w-[1380px] grid-cols-1 gap-2 overflow-hidden px-0 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:h-[calc(100dvh-5.25rem)] sm:gap-3 sm:px-3 sm:pb-6 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <div className="hidden h-full min-h-0 border-r border-stone-200/70 pr-3 lg:block">
+        <div className="hidden h-full min-h-0 border-r border-sky-100/80 pr-3 lg:block">
           <ImageSidebar
             conversations={conversations}
             isLoadingHistory={isLoadingHistory}
@@ -1390,7 +1390,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         </div>
 
         <Dialog open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
-          <DialogContent className="flex h-[min(82dvh,760px)] w-[92vw] max-w-[460px] flex-col overflow-hidden rounded-[32px] border-white/80 bg-white p-0 shadow-[0_32px_110px_-38px_rgba(15,23,42,0.45)] sm:rounded-[36px]">
+          <DialogContent className="flex h-[min(82dvh,760px)] w-[92vw] max-w-[460px] flex-col overflow-hidden rounded-[32px] border-sky-100/90 bg-white p-0 shadow-[0_32px_110px_-38px_rgba(37,99,235,0.28)] sm:rounded-[36px]">
             <DialogHeader className="px-6 pt-7 pb-4 sm:px-8">
               <DialogTitle className="flex items-center gap-2 text-xl font-bold tracking-tight">
                 <History className="size-5" />
@@ -1439,14 +1439,14 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
           <div className="flex items-center justify-between gap-2 px-1 lg:hidden">
             <Button
               variant="outline"
-              className="h-10 flex-1 rounded-2xl border-stone-200 bg-white/90 text-stone-700 shadow-sm"
+              className="h-10 flex-1 rounded-2xl border-sky-100 bg-white/90 text-slate-700 shadow-sm hover:bg-sky-50"
               onClick={() => setIsHistoryOpen(true)}
             >
               <History className="mr-2 size-4" />
               历史记录 ({conversations.length})
             </Button>
             <Button
-              className="h-10 rounded-2xl bg-stone-950 text-white shadow-sm"
+              className="h-10 rounded-2xl shadow-sm"
               onClick={handleCreateDraft}
             >
               <Plus className="size-4" />
@@ -1454,7 +1454,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
             </Button>
             <Button
               variant="outline"
-              className="h-10 rounded-2xl border-stone-200 bg-white/85 px-3 text-stone-600 shadow-sm"
+              className="h-10 rounded-2xl border-sky-100 bg-white/85 px-3 text-slate-600 shadow-sm hover:bg-sky-50"
               onClick={openClearHistoryConfirm}
               disabled={conversations.length === 0}
             >

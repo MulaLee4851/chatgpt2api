@@ -48,8 +48,8 @@ function RegisterPageContent() {
       <RegisterDataController />
       <section className="mb-2 flex flex-col gap-1 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">Register</div>
-          <h1 className="text-2xl font-semibold tracking-tight">ChatGPT注册机</h1>
+          <div className="text-xs font-semibold tracking-[0.18em] text-sky-700 uppercase">LeesAiHub</div>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">账号注册中心</h1>
         </div>
       </section>
       <section>

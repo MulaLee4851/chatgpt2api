@@ -12,6 +12,7 @@ from api import accounts, ai, image_tasks, image_templates, register, system
 from api.support import resolve_web_asset, start_limited_account_watcher
 from services.backup_service import backup_service
 from services.config import config
+from services.scheduled_account_refresh_service import scheduled_account_refresh_service
 
 
 def create_app() -> FastAPI:
@@ -22,6 +23,7 @@ def create_app() -> FastAPI:
         stop_event = Event()
         thread = start_limited_account_watcher(stop_event)
         backup_service.start()
+        scheduled_account_refresh_service.start()
         config.cleanup_old_images()
         try:
             yield
@@ -29,6 +31,7 @@ def create_app() -> FastAPI:
             stop_event.set()
             thread.join(timeout=1)
             backup_service.stop()
+            scheduled_account_refresh_service.stop()
 
     app = FastAPI(title="chatgpt2api", version=app_version, lifespan=lifespan)
     app.add_middleware(

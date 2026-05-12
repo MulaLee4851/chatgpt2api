@@ -390,14 +390,14 @@ function GptWebPageContent() {
           <div className="flex items-center justify-between gap-2 px-1 lg:hidden">
             <Button
               variant="outline"
-              className="h-10 flex-1 rounded-2xl border-stone-200 bg-white/90 text-stone-700 shadow-sm"
+              className="h-10 flex-1 rounded-2xl border-sky-100 bg-white/90 text-slate-700 shadow-sm hover:bg-sky-50"
               onClick={() => setIsHistoryOpen(true)}
             >
               <History className="mr-2 size-4" />
               历史记录 ({conversations.length})
             </Button>
             <Button
-              className="h-10 rounded-2xl bg-stone-950 text-white shadow-sm"
+              className="h-10 rounded-2xl shadow-sm"
               onClick={handleCreateDraft}
             >
               <Plus className="size-4" />
@@ -405,7 +405,7 @@ function GptWebPageContent() {
             </Button>
             <Button
               variant="outline"
-              className="h-10 rounded-2xl border-stone-200 bg-white/85 px-3 text-stone-600 shadow-sm"
+              className="h-10 rounded-2xl border-sky-100 bg-white/85 px-3 text-slate-600 shadow-sm hover:bg-sky-50"
               onClick={openClearHistoryConfirm}
               disabled={conversations.length === 0}
             >

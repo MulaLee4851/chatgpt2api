@@ -21,6 +21,9 @@ export function ConfigCard() {
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
+  const setScheduledAccountRefreshEnabled = useSettingsStore((state) => state.setScheduledAccountRefreshEnabled);
+  const setScheduledAccountRefreshIntervalMinutes = useSettingsStore((state) => state.setScheduledAccountRefreshIntervalMinutes);
+  const setScheduledAccountRefreshWorkerCount = useSettingsStore((state) => state.setScheduledAccountRefreshWorkerCount);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
   const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
   const setImageAccountConcurrency = useSettingsStore((state) => state.setImageAccountConcurrency);
@@ -82,7 +85,41 @@ export function ConfigCard() {
               placeholder="分钟"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">单位分钟，控制账号自动刷新频率。</p>
+            <p className="text-xs text-stone-500">单位分钟，控制限流账号自动刷新频率。</p>
+          </div>
+          <div className="space-y-4 rounded-xl border border-stone-200 bg-white px-4 py-3 md:col-span-2">
+            <label className="flex items-center gap-3 text-sm text-stone-700">
+              <Checkbox
+                checked={Boolean(config?.scheduled_account_refresh?.enabled)}
+                onCheckedChange={(checked) => setScheduledAccountRefreshEnabled(Boolean(checked))}
+              />
+              启用定时全量刷新账号
+            </label>
+            <p className="text-xs leading-6 text-stone-500">
+              后端会按间隔自动从存储中拉取全部账号 token 并刷新额度与状态，不再依赖前端发送超长 bearer 列表。
+            </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm text-stone-700">刷新间隔</label>
+                <Input
+                  value={String(config?.scheduled_account_refresh?.interval_minutes || "")}
+                  onChange={(event) => setScheduledAccountRefreshIntervalMinutes(event.target.value)}
+                  placeholder="10"
+                  className="h-10 rounded-xl border-stone-200 bg-white"
+                />
+                <p className="text-xs text-stone-500">单位分钟，控制后台全量刷新周期。</p>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm text-stone-700">刷新线程数</label>
+                <Input
+                  value={String(config?.scheduled_account_refresh?.worker_count || "")}
+                  onChange={(event) => setScheduledAccountRefreshWorkerCount(event.target.value)}
+                  placeholder="5"
+                  className="h-10 rounded-xl border-stone-200 bg-white"
+                />
+                <p className="text-xs text-stone-500">每轮刷新使用的并发线程数。</p>
+              </div>
+            </div>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">全局代理</label>

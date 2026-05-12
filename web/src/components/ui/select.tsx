@@ -29,7 +29,7 @@ function SelectTrigger({
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       className={cn(
-        "border-input bg-background data-[placeholder]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 flex h-11 w-full items-center justify-between gap-2 rounded-2xl border px-4 py-2 text-sm whitespace-nowrap shadow-sm outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1",
+        "border-input bg-background data-[placeholder]:text-muted-foreground focus-visible:border-sky-300 focus-visible:ring-sky-100 flex h-11 w-full items-center justify-between gap-2 rounded-2xl border px-4 py-2 text-sm whitespace-nowrap shadow-sm outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1",
         className,
       )}
       {...props}
@@ -89,7 +89,7 @@ function SelectContent({
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(
-          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out relative z-50 max-h-96 min-w-[8rem] overflow-x-hidden overflow-y-auto rounded-2xl border border-white/80 shadow-[0_20px_60px_-30px_rgba(15,23,42,0.35)]",
+          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out relative z-50 max-h-96 min-w-[8rem] overflow-x-hidden overflow-y-auto rounded-2xl border border-sky-100/90 shadow-[0_24px_70px_-34px_rgba(37,99,235,0.28)]",
           position === "popper" &&
             "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
           className,

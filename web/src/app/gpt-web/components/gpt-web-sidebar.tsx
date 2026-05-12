@@ -34,13 +34,13 @@ export function GptWebSidebar({
       <div className="flex h-full min-h-0 flex-col gap-2 py-1 sm:gap-3 sm:py-2">
         {!hideActionButtons && (
           <div className="flex items-center gap-2">
-            <Button className="h-10 flex-1 rounded-xl bg-stone-950 text-white hover:bg-stone-800" onClick={onCreateDraft}>
+            <Button className="h-10 flex-1 rounded-xl" onClick={onCreateDraft}>
               <MessageSquarePlus className="size-4" />
               新建对话
             </Button>
             <Button
               variant="outline"
-              className="h-10 rounded-xl border-stone-200 bg-white/85 px-3 text-stone-600 hover:bg-white"
+              className="h-10 rounded-xl border-sky-100 bg-white/85 px-3 text-slate-600 hover:bg-sky-50"
               onClick={() => void onClearHistory()}
               disabled={conversations.length === 0}
             >

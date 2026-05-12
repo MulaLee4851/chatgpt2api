@@ -208,11 +208,11 @@ def create_router() -> APIRouter:
     async def refresh_accounts(body: AccountRefreshRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
         access_tokens = [str(token or "").strip() for token in body.access_tokens if str(token or "").strip()]
-        if not access_tokens:
-            access_tokens = account_service.list_tokens()
-        if not access_tokens:
+        if access_tokens:
+            return account_service.refresh_accounts(access_tokens)
+        if not account_service.list_tokens():
             raise HTTPException(status_code=400, detail={"error": "access_tokens is required"})
-        return account_service.refresh_accounts(access_tokens)
+        return account_service.refresh_all_accounts()
 
     @router.post("/api/accounts/update")
     async def update_account(body: AccountUpdateRequest, authorization: Optional[str] = Header(default=None)):

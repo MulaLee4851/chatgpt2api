@@ -85,6 +85,15 @@ def _normalize_backup_state(value: object) -> dict[str, object]:
     }
 
 
+def _normalize_scheduled_account_refresh_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), False),
+        "interval_minutes": _normalize_positive_int(source.get("interval_minutes"), 10, 1),
+        "worker_count": _normalize_positive_int(source.get("worker_count"), 5, 1),
+    }
+
+
 @dataclass(frozen=True)
 class LoadedSettings:
     auth_key: str
@@ -291,6 +300,7 @@ class ConfigStore:
         data["ai_review"] = self.ai_review
         data["global_system_prompt"] = self.global_system_prompt
         data["backup"] = self.get_backup_settings()
+        data["scheduled_account_refresh"] = self.get_scheduled_account_refresh_settings()
         data.pop("auth-key", None)
         return data
 
@@ -302,6 +312,10 @@ class ConfigStore:
         next_data.update(dict(data or {}))
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
+        if "scheduled_account_refresh" in next_data:
+            next_data["scheduled_account_refresh"] = _normalize_scheduled_account_refresh_settings(
+                next_data.get("scheduled_account_refresh"),
+            )
         next_data.pop("backup_state", None)
         self.data = next_data
         self._save()
@@ -309,6 +323,9 @@ class ConfigStore:
 
     def get_backup_settings(self) -> dict[str, object]:
         return _normalize_backup_settings(self.data.get("backup"))
+
+    def get_scheduled_account_refresh_settings(self) -> dict[str, object]:
+        return _normalize_scheduled_account_refresh_settings(self.data.get("scheduled_account_refresh"))
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""

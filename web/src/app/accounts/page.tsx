@@ -75,12 +75,12 @@ const statusMeta: Record<
 };
 
 const metricCards = [
-  { key: "total", label: "账户总数", color: "text-stone-900", icon: UserRound },
+  { key: "total", label: "账户总数", color: "text-slate-900", icon: UserRound },
   { key: "active", label: "正常账户", color: "text-emerald-600", icon: CheckCircle2 },
   { key: "limited", label: "限流账户", color: "text-orange-500", icon: CircleAlert },
   { key: "abnormal", label: "异常账户", color: "text-rose-500", icon: CircleOff },
-  { key: "disabled", label: "禁用账户", color: "text-stone-500", icon: Ban },
-  { key: "quota", label: "剩余额度", color: "text-blue-500", icon: RefreshCw },
+  { key: "disabled", label: "禁用账户", color: "text-slate-500", icon: Ban },
+  { key: "quota", label: "剩余额度", color: "text-sky-600", icon: RefreshCw },
 ] as const;
 
 function isUnlimitedImageQuotaAccount(account: Account) {
@@ -286,12 +286,7 @@ function AccountsPageContent() {
     }
   };
 
-  const handleRefreshAccounts = async (accessTokens: string[]) => {
-    if (accessTokens.length === 0) {
-      toast.error("没有需要刷新的账户");
-      return;
-    }
-
+  const handleRefreshAccounts = async (accessTokens: string[] = []) => {
     setIsRefreshing(true);
     try {
       const data = await refreshAccounts(accessTokens);
@@ -352,16 +347,16 @@ function AccountsPageContent() {
     <>
       <section className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">
-            Account Pool
+          <div className="text-xs font-semibold tracking-[0.18em] text-sky-700 uppercase">
+            LeesAiHub
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight">号池管理</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">号池管理</h1>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
+            className="h-10 rounded-xl border-sky-100 bg-white/80 px-4 text-slate-700 hover:bg-sky-50"
             onClick={() => void loadAccounts()}
             disabled={isLoading || isRefreshing || isDeleting}
           >
@@ -370,8 +365,8 @@ function AccountsPageContent() {
           </Button>
           <Button
             variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
-            onClick={() => void handleRefreshAccounts(accounts.map((item) => item.access_token))}
+            className="h-10 rounded-xl border-sky-100 bg-white/80 px-4 text-slate-700 hover:bg-sky-50"
+            onClick={() => void handleRefreshAccounts()}
             disabled={isLoading || isRefreshing || isDeleting || accounts.length === 0}
           >
             <RefreshCw className={cn("size-4", isRefreshing ? "animate-spin" : "")} />
@@ -387,7 +382,7 @@ function AccountsPageContent() {
           />
           <Button
             variant="outline"
-            className="h-10 rounded-xl border-stone-200 bg-white/80 px-4 text-stone-700 hover:bg-white"
+            className="h-10 rounded-xl border-sky-100 bg-white/80 px-4 text-slate-700 hover:bg-sky-50"
             onClick={() => downloadTokens(accounts)}
             disabled={accounts.length === 0}
           >
@@ -427,14 +422,14 @@ function AccountsPageContent() {
           <DialogFooter className="pt-2">
             <Button
               variant="secondary"
-              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              className="h-10 rounded-xl bg-sky-50 px-5 text-sky-700 hover:bg-sky-100"
               onClick={() => setEditingAccount(null)}
               disabled={isUpdating}
             >
               取消
             </Button>
             <Button
-              className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
+              className="h-10 rounded-xl px-5"
               onClick={() => void handleUpdateAccount()}
               disabled={isUpdating}
             >

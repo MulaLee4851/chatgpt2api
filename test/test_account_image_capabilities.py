@@ -104,6 +104,7 @@ import api.ai as ai_module
 import api.image_templates as image_templates_module
 import api.system as system_module
 import services.image_template_service as image_template_service_module
+import services.scheduled_account_refresh_service as scheduled_account_refresh_service_module
 from services.account_service import AccountService
 from services.auth_service import AuthService
 from services.storage.json_storage import JSONStorageBackend
@@ -162,6 +163,25 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(updated["quota"], 0)
             self.assertEqual(updated["status"], "正常")
             self.assertTrue(updated["image_quota_unknown"])
+
+    def test_refresh_all_accounts_uses_stored_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_accounts(["token-1", "token-2"])
+            refreshed_tokens = []
+
+            def fake_fetch(access_token: str, event: str = "fetch_remote_info"):
+                refreshed_tokens.append((access_token, event))
+                return {"access_token": access_token}
+
+            service.fetch_remote_info = fake_fetch
+
+            result = service.refresh_all_accounts(worker_count=1)
+
+            self.assertEqual(result["refreshed"], 2)
+            self.assertEqual(result["errors"], [])
+            self.assertEqual({token for token, _event in refreshed_tokens}, {"token-1", "token-2"})
+            self.assertTrue(all(event == "refresh_all_accounts" for _token, event in refreshed_tokens))
 
 
 class TokenLogTests(unittest.TestCase):
@@ -328,11 +348,26 @@ class FakeAuthService:
 
 
 class FakeAccountService:
+    def __init__(self):
+        self.refresh_accounts_calls = []
+        self.refresh_all_accounts_calls = []
+
     def list_accounts(self):
         return []
 
+    def list_tokens(self):
+        return ["token-1", "token-2"]
+
     def get_summary(self):
         return {"normal_count": 3}
+
+    def refresh_accounts(self, access_tokens, worker_count=None):
+        self.refresh_accounts_calls.append({"access_tokens": list(access_tokens), "worker_count": worker_count})
+        return {"items": [], "refreshed": len(access_tokens), "errors": []}
+
+    def refresh_all_accounts(self, worker_count=None):
+        self.refresh_all_accounts_calls.append({"worker_count": worker_count})
+        return {"items": [], "refreshed": 2, "errors": []}
 
 
 class AccountsApiTests(unittest.TestCase):
@@ -377,6 +412,27 @@ class AccountsApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), {"normal_count": 3})
+
+    def test_refresh_accounts_uses_selected_tokens_when_provided(self):
+        response = self.client.post(
+            "/api/accounts/refresh",
+            headers={"Authorization": "Bearer test-auth"},
+            json={"access_tokens": ["token-1"]},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.fake_accounts.refresh_accounts_calls, [{"access_tokens": ["token-1"], "worker_count": None}])
+        self.assertEqual(self.fake_accounts.refresh_all_accounts_calls, [])
+
+    def test_refresh_accounts_uses_backend_tokens_when_request_list_is_empty(self):
+        response = self.client.post(
+            "/api/accounts/refresh",
+            headers={"Authorization": "Bearer test-auth"},
+            json={"access_tokens": []},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.fake_accounts.refresh_all_accounts_calls, [{"worker_count": None}])
 
 
 class AIApiPermissionTests(unittest.TestCase):
@@ -481,6 +537,37 @@ class AIApiPermissionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.consume_tokens.assert_called_once_with(identity, 7)
+
+
+class ScheduledAccountRefreshServiceTests(unittest.TestCase):
+    def test_run_scheduled_refresh_if_needed_uses_configured_worker_count(self):
+        service = scheduled_account_refresh_service_module.ScheduledAccountRefreshService()
+        with mock.patch.object(
+            scheduled_account_refresh_service_module.config,
+            "get_scheduled_account_refresh_settings",
+            return_value={"enabled": True, "interval_minutes": 10, "worker_count": 7},
+        ), mock.patch.object(
+            scheduled_account_refresh_service_module.account_service,
+            "refresh_all_accounts",
+            return_value={"refreshed": 2, "errors": [], "items": []},
+        ) as refresh_all:
+            service.run_scheduled_refresh_if_needed()
+
+        refresh_all.assert_called_once_with(worker_count=7)
+
+    def test_run_scheduled_refresh_if_needed_skips_when_disabled(self):
+        service = scheduled_account_refresh_service_module.ScheduledAccountRefreshService()
+        with mock.patch.object(
+            scheduled_account_refresh_service_module.config,
+            "get_scheduled_account_refresh_settings",
+            return_value={"enabled": False, "interval_minutes": 10, "worker_count": 7},
+        ), mock.patch.object(
+            scheduled_account_refresh_service_module.account_service,
+            "refresh_all_accounts",
+        ) as refresh_all:
+            service.run_scheduled_refresh_if_needed()
+
+        refresh_all.assert_not_called()
 
 
 class SystemLoginTests(unittest.TestCase):

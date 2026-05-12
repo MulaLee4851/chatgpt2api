@@ -81,6 +81,11 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
       model: String(config.ai_review?.model || ""),
       prompt: String(config.ai_review?.prompt || ""),
     },
+    scheduled_account_refresh: {
+      enabled: Boolean(config.scheduled_account_refresh?.enabled),
+      interval_minutes: Number(config.scheduled_account_refresh?.interval_minutes || 10),
+      worker_count: Number(config.scheduled_account_refresh?.worker_count || 5),
+    },
     backup: {
       ...backup,
       enabled: Boolean(backup.enabled),
@@ -170,6 +175,9 @@ type SettingsStore = {
   removeBackup: (key: string) => Promise<void>;
   testBackup: () => Promise<void>;
   setRefreshAccountIntervalMinute: (value: string) => void;
+  setScheduledAccountRefreshEnabled: (value: boolean) => void;
+  setScheduledAccountRefreshIntervalMinutes: (value: string) => void;
+  setScheduledAccountRefreshWorkerCount: (value: string) => void;
   setImageRetentionDays: (value: string) => void;
   setImagePollTimeoutSecs: (value: string) => void;
   setImageAccountConcurrency: (value: string) => void;
@@ -317,6 +325,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
           model: String(config.ai_review?.model || "").trim(),
           prompt: String(config.ai_review?.prompt || "").trim(),
         },
+        scheduled_account_refresh: {
+          enabled: Boolean(config.scheduled_account_refresh?.enabled),
+          interval_minutes: Math.max(1, Number(config.scheduled_account_refresh?.interval_minutes) || 10),
+          worker_count: Math.max(1, Number(config.scheduled_account_refresh?.worker_count) || 5),
+        },
         backup: {
           ...(config.backup as BackupSettings),
           account_id: String(config.backup?.account_id || "").trim(),
@@ -354,6 +367,42 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         },
       };
     });
+  },
+
+  setScheduledAccountRefreshEnabled: (value) => {
+    set((state) => state.config ? {
+      config: {
+        ...state.config,
+        scheduled_account_refresh: {
+          ...(state.config.scheduled_account_refresh || {}),
+          enabled: value,
+        },
+      },
+    } : {});
+  },
+
+  setScheduledAccountRefreshIntervalMinutes: (value) => {
+    set((state) => state.config ? {
+      config: {
+        ...state.config,
+        scheduled_account_refresh: {
+          ...(state.config.scheduled_account_refresh || {}),
+          interval_minutes: value,
+        },
+      },
+    } : {});
+  },
+
+  setScheduledAccountRefreshWorkerCount: (value) => {
+    set((state) => state.config ? {
+      config: {
+        ...state.config,
+        scheduled_account_refresh: {
+          ...(state.config.scheduled_account_refresh || {}),
+          worker_count: value,
+        },
+      },
+    } : {});
   },
 
   setImageRetentionDays: (value) => {
