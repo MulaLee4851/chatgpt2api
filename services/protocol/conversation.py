@@ -13,6 +13,7 @@ import tiktoken
 
 from services.account_service import account_service
 from services.config import config
+from services.log_service import log_service
 from services.openai_backend_api import OpenAIBackendAPI
 from utils.helper import GPT_WEB_MODEL, IMAGE_MODELS, extract_image_from_message_content
 from utils.log import logger
@@ -183,6 +184,79 @@ def build_image_prompt(prompt: str, size: str | None, strict_image_only: bool = 
         else (IMAGE_ONLY_RETRY_INSTRUCTION_EN if strict_image_only else IMAGE_ONLY_INSTRUCTION_EN)
     )
     return "\n\n".join(part for part in parts if part)
+
+
+def _truncate_text(value: object, limit: int = 1000) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+DEBUG_EVENT_TAIL_LIMIT = 12
+DEBUG_TEXT_LIMIT = 1200
+
+
+def _clip_debug_value(value: Any, depth: int = 0) -> Any:
+    if depth >= 4:
+        return _truncate_text(value, 240)
+    if isinstance(value, dict):
+        clipped: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in {"b64_json", "data", "image_bytes"}:
+                clipped[key_text] = "<omitted>"
+                continue
+            clipped[key_text] = _clip_debug_value(item, depth + 1)
+        return clipped
+    if isinstance(value, list):
+        if len(value) > 8:
+            value = value[-8:]
+        return [_clip_debug_value(item, depth + 1) for item in value]
+    if isinstance(value, str):
+        if value.startswith("data:"):
+            return "<data-url omitted>"
+        return _truncate_text(value, DEBUG_TEXT_LIMIT)
+    return value
+
+
+def _append_debug_event(bucket: list[dict[str, Any]], item: dict[str, Any]) -> None:
+    bucket.append(_clip_debug_value(item))
+    if len(bucket) > DEBUG_EVENT_TAIL_LIMIT:
+        del bucket[:-DEBUG_EVENT_TAIL_LIMIT]
+
+
+def _log_image_debug_snapshot(
+    request: ConversationRequest,
+    *,
+    conversation_id: str,
+    file_ids: list[str],
+    sediment_ids: list[str],
+    message: str,
+    last: dict[str, Any],
+    raw_events_tail: list[dict[str, Any]],
+    parsed_events_tail: list[dict[str, Any]],
+    reason: str,
+) -> None:
+    log_service.add(
+        "image_upstream_debug",
+        "图片请求回退为文本",
+        {
+            "reason": reason,
+            "conversation_id": conversation_id,
+            "model": request.model,
+            "prompt_excerpt": _truncate_text(request.prompt, 600),
+            "tool_invoked": last.get("tool_invoked"),
+            "turn_use_case": last.get("turn_use_case"),
+            "blocked": bool(last.get("blocked")),
+            "message": _truncate_text(message, DEBUG_TEXT_LIMIT),
+            "file_ids": file_ids,
+            "sediment_ids": sediment_ids,
+            "image_retry_count": request.image_retry_count,
+            "raw_events_tail": raw_events_tail,
+            "parsed_events_tail": parsed_events_tail,
+        },
+    )
 
 
 def encoding_for_model(model: str):
@@ -793,6 +867,8 @@ def stream_image_outputs(
         total: int = 1,
 ) -> Iterator[ImageOutput]:
     last: dict[str, Any] = {}
+    raw_events_tail: list[dict[str, Any]] = []
+    parsed_events_tail: list[dict[str, Any]] = []
     for event in conversation_events(
             backend,
             prompt=request.prompt,
@@ -802,7 +878,14 @@ def stream_image_outputs(
             strict_image_only=request.image_retry_count > 0,
     ):
         last = event
-        if event.get("type") == "conversation.delta":
+        event_type = str(event.get("type") or "")
+        if event_type == "conversation.delta":
+            _append_debug_event(parsed_events_tail, {
+                "type": event_type,
+                "delta": event.get("delta"),
+            })
+            if isinstance(event.get("raw"), dict):
+                _append_debug_event(raw_events_tail, event.get("raw") or {})
             yield ImageOutput(
                 kind="progress",
                 model=request.model,
@@ -812,8 +895,19 @@ def stream_image_outputs(
                 upstream_event_type="conversation.delta",
             )
             continue
-        if event.get("type") == "conversation.event":
+        if event_type == "conversation.event":
             raw = event.get("raw")
+            if isinstance(raw, dict):
+                _append_debug_event(raw_events_tail, raw)
+            _append_debug_event(parsed_events_tail, {
+                "type": event_type,
+                "conversation_id": event.get("conversation_id"),
+                "file_ids": event.get("file_ids"),
+                "sediment_ids": event.get("sediment_ids"),
+                "tool_invoked": event.get("tool_invoked"),
+                "turn_use_case": event.get("turn_use_case"),
+                "text": event.get("text"),
+            })
             raw_type = str(raw.get("type") or "") if isinstance(raw, dict) else ""
             yield ImageOutput(
                 kind="progress",
@@ -855,6 +949,17 @@ def stream_image_outputs(
         error_text = message
         if is_text_response and not last.get("blocked"):
             error_text = f"上游未生成图片，而是返回补充说明：{message}"
+        _log_image_debug_snapshot(
+            request,
+            conversation_id=conversation_id,
+            file_ids=file_ids,
+            sediment_ids=sediment_ids,
+            message=message,
+            last=last,
+            raw_events_tail=raw_events_tail,
+            parsed_events_tail=parsed_events_tail,
+            reason="text_fallback",
+        )
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=error_text)
         return
 
@@ -879,6 +984,17 @@ def stream_image_outputs(
         text = message
         if is_text_response:
             text = f"上游未生成图片，而是返回补充说明：{message}"
+        _log_image_debug_snapshot(
+            request,
+            conversation_id=conversation_id,
+            file_ids=file_ids,
+            sediment_ids=sediment_ids,
+            message=message,
+            last=last,
+            raw_events_tail=raw_events_tail,
+            parsed_events_tail=parsed_events_tail,
+            reason="message_without_assets",
+        )
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=text)
 
 
