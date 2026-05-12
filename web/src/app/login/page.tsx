@@ -61,7 +61,7 @@ export default function LoginPage() {
         <CardContent className="space-y-7 p-6 sm:p-8">
           <div className="space-y-4 text-center">
             <div className="mx-auto inline-flex size-16 items-center justify-center overflow-hidden rounded-[20px] border border-sky-100 bg-[#f7f6f2] shadow-sm">
-              <Image src="/static/logo.jpg" alt="LeesAiHub logo" width={64} height={64} className="size-full object-cover" />
+              <Image src="/logo.jpg" alt="LeesAiHub logo" width={64} height={64} className="size-full object-cover" />
             </div>
             <div className="space-y-2">
               <div className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-3 py-1 text-xs font-semibold tracking-[0.18em] text-sky-700 uppercase">

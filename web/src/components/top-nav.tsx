@@ -81,7 +81,7 @@ export function TopNav() {
             className="inline-flex shrink-0 items-center gap-3 py-1 text-[15px] font-bold tracking-tight text-slate-900 transition hover:text-sky-700"
           >
             <span className="flex size-9 items-center justify-center overflow-hidden rounded-2xl border border-sky-100 bg-[#f7f6f2] shadow-sm">
-              <Image src="/static/logo.jpg" alt="LeesAiHub logo" width={36} height={36} className="size-full object-cover" />
+              <Image src="/logo.jpg" alt="LeesAiHub logo" width={36} height={36} className="size-full object-cover" />
             </span>
             <span>LeesAiHub</span>
           </Link>
