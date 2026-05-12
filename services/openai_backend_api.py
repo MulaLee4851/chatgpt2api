@@ -576,7 +576,7 @@ class OpenAIBackendAPI:
             "timezone_offset_min": -480,
             "timezone": "Asia/Shanghai",
             "conversation_mode": {"kind": "primary_assistant"},
-            "enable_message_followups": True,
+            "enable_message_followups": False,
             "system_hints": ["picture_v2"],
             "supports_buffering": True,
             "supported_encodings": ["v1"],

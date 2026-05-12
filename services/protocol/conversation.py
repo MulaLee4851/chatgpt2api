@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -139,19 +139,26 @@ def assistant_history_messages(messages: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("content") or "") for item in messages if item.get("role") == "assistant" and item.get("content")]
 
 
-def build_image_prompt(prompt: str, size: str | None) -> str:
-    if not size:
-        return prompt
-    if size not in {"1:1", "16:9", "9:16", "4:3", "3:4"}:
-        return f"{prompt.strip()}\n\n输出图片，宽高比为 {size}。"
-    hint = {
-        "1:1": "输出为 1:1 正方形构图，主体居中，适合正方形画幅。",
-        "16:9": "输出为 16:9 横屏构图，适合宽画幅展示。",
-        "9:16": "输出为 9:16 竖屏构图，适合竖版画幅展示。",
-        "4:3": "输出为 4:3 比例，兼顾宽度与高度，适合展示画面细节。",
-        "3:4": "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
-    }[size]
-    return f"{prompt.strip()}\n\n{hint}"
+IMAGE_ONLY_INSTRUCTION = "直接生成最终图片结果，不要提问，不要返回说明文字，不要请求用户补充信息。"
+IMAGE_ONLY_RETRY_INSTRUCTION = "这是图片生成请求。请直接输出最终图片，不要追问，不要解释，不要返回文字说明。"
+
+
+def build_image_prompt(prompt: str, size: str | None, strict_image_only: bool = False) -> str:
+    base_prompt = prompt.strip()
+    parts = [base_prompt] if base_prompt else []
+    if size:
+        if size not in {"1:1", "16:9", "9:16", "4:3", "3:4"}:
+            parts.append(f"输出图片，宽高比为 {size}。")
+        else:
+            parts.append({
+                "1:1": "输出为 1:1 正方形构图，主体居中，适合正方形画幅。",
+                "16:9": "输出为 16:9 横屏构图，适合宽画幅展示。",
+                "9:16": "输出为 9:16 竖屏构图，适合竖版画幅展示。",
+                "4:3": "输出为 4:3 比例，兼顾宽度与高度，适合展示画面细节。",
+                "3:4": "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
+            }[size])
+    parts.append(IMAGE_ONLY_RETRY_INSTRUCTION if strict_image_only else IMAGE_ONLY_INSTRUCTION)
+    return "\n\n".join(part for part in parts if part)
 
 
 def encoding_for_model(model: str):
@@ -224,6 +231,7 @@ class ConversationRequest:
     response_format: str = "b64_json"
     base_url: str | None = None
     message_as_error: bool = False
+    image_retry_count: int = 0
 
 
 @dataclass
@@ -695,12 +703,13 @@ def conversation_events(
     prompt: str = "",
     images: list[str] | None = None,
     size: str | None = None,
+    strict_image_only: bool = False,
 ) -> Iterator[dict[str, Any]]:
     normalized = normalize_messages(messages or ([{"role": "user", "content": prompt}] if prompt else []))
     image_model = str(model or "").strip() in IMAGE_MODELS
     history_text = "" if image_model else assistant_history_text(normalized)
     history_messages = [] if image_model else assistant_history_messages(normalized)
-    final_prompt = prompt_with_global_system(build_image_prompt(prompt, size)) if image_model else prompt
+    final_prompt = prompt_with_global_system(build_image_prompt(prompt, size, strict_image_only)) if image_model else prompt
     payloads = backend.stream_conversation(
         messages=normalized,
         model=model,
@@ -766,6 +775,7 @@ def stream_image_outputs(
             model=request.model,
             images=request.images or [],
             size=request.size,
+            strict_image_only=request.image_retry_count > 0,
     ):
         last = event
         if event.get("type") == "conversation.delta":
@@ -803,7 +813,25 @@ def stream_image_outputs(
         "turn_use_case": last.get("turn_use_case"),
     })
     if message and not file_ids and not sediment_ids and (last.get("blocked") or is_text_response):
-        yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
+        should_retry = bool(message) and not last.get("blocked") and is_text_response and request.image_retry_count < 1
+        if should_retry:
+            logger.info({
+                "event": "image_stream_retry_on_text_response",
+                "conversation_id": conversation_id,
+                "retry_count": request.image_retry_count + 1,
+                "turn_use_case": last.get("turn_use_case"),
+            })
+            yield from stream_image_outputs(
+                backend,
+                replace(request, image_retry_count=request.image_retry_count + 1),
+                index=index,
+                total=total,
+            )
+            return
+        error_text = message
+        if is_text_response and not last.get("blocked"):
+            error_text = f"上游未生成图片，而是返回补充说明：{message}"
+        yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=error_text)
         return
 
     image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
@@ -824,7 +852,10 @@ def stream_image_outputs(
         return
 
     if message:
-        yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=message)
+        text = message
+        if is_text_response:
+            text = f"上游未生成图片，而是返回补充说明：{message}"
+        yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=text)
 
 
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:

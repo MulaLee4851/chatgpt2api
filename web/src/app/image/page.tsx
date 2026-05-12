@@ -1310,7 +1310,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
     }
 
     const effectiveImageMode: ImageConversationMode =
-      selectedTemplate?.mode === "edit" || referenceImageFiles.length > 0 ? "edit" : "generate";
+      selectedTemplate?.mode === "edit" || referenceImageSources.includes("user") ? "edit" : "generate";
     const requiresUserOriginal = selectedTemplate?.references.some(
       (reference) => reference.type === "original" && reference.required && !reference.asset_url,
     );
