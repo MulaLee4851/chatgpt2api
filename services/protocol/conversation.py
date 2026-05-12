@@ -139,25 +139,49 @@ def assistant_history_messages(messages: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("content") or "") for item in messages if item.get("role") == "assistant" and item.get("content")]
 
 
-IMAGE_ONLY_INSTRUCTION = "直接生成最终图片结果，不要提问，不要返回说明文字，不要请求用户补充信息。"
-IMAGE_ONLY_RETRY_INSTRUCTION = "这是图片生成请求。请直接输出最终图片，不要追问，不要解释，不要返回文字说明。"
+IMAGE_ONLY_INSTRUCTION_ZH = "生成以下照片。直接生成最终图片结果，不要提问，不要返回说明文字，不要请求用户补充信息。"
+IMAGE_ONLY_RETRY_INSTRUCTION_ZH = "生成以下照片。这是图片生成请求。请直接输出最终图片，不要追问，不要解释，不要返回文字说明。"
+IMAGE_ONLY_INSTRUCTION_EN = "Generate the following image. Output the final image only. Do not ask questions, return explanatory text, or request additional information."
+IMAGE_ONLY_RETRY_INSTRUCTION_EN = "Generate the following image. This is an image-generation request. Output the final image only. Do not ask follow-up questions, explain, or return text instead of an image."
+
+
+def detect_prompt_language(prompt: str) -> str:
+    cjk_count = len(re.findall(r"[一-鿿]", prompt))
+    latin_count = len(re.findall(r"[A-Za-z]", prompt))
+    return "zh" if cjk_count >= max(1, latin_count // 2) else "en"
 
 
 def build_image_prompt(prompt: str, size: str | None, strict_image_only: bool = False) -> str:
     base_prompt = prompt.strip()
+    language = detect_prompt_language(base_prompt)
     parts = [base_prompt] if base_prompt else []
     if size:
         if size not in {"1:1", "16:9", "9:16", "4:3", "3:4"}:
-            parts.append(f"输出图片，宽高比为 {size}。")
+            parts.append(
+                f"输出图片，宽高比为 {size}。" if language == "zh" else f"Output an image with a {size} aspect ratio."
+            )
         else:
             parts.append({
-                "1:1": "输出为 1:1 正方形构图，主体居中，适合正方形画幅。",
-                "16:9": "输出为 16:9 横屏构图，适合宽画幅展示。",
-                "9:16": "输出为 9:16 竖屏构图，适合竖版画幅展示。",
-                "4:3": "输出为 4:3 比例，兼顾宽度与高度，适合展示画面细节。",
-                "3:4": "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
-            }[size])
-    parts.append(IMAGE_ONLY_RETRY_INSTRUCTION if strict_image_only else IMAGE_ONLY_INSTRUCTION)
+                "zh": {
+                    "1:1": "输出为 1:1 正方形构图，主体居中，适合正方形画幅。",
+                    "16:9": "输出为 16:9 横屏构图，适合宽画幅展示。",
+                    "9:16": "输出为 9:16 竖屏构图，适合竖版画幅展示。",
+                    "4:3": "输出为 4:3 比例，兼顾宽度与高度，适合展示画面细节。",
+                    "3:4": "输出为 3:4 比例，纵向构图，适合人物肖像或竖向场景。",
+                },
+                "en": {
+                    "1:1": "Output a 1:1 square composition with the subject centered.",
+                    "16:9": "Output a 16:9 landscape composition suited for a wide frame.",
+                    "9:16": "Output a 9:16 portrait composition suited for a vertical frame.",
+                    "4:3": "Output a 4:3 composition that balances width and height for scene detail.",
+                    "3:4": "Output a 3:4 portrait composition suited for people or vertical scenes.",
+                },
+            }[language][size])
+    parts.append(
+        (IMAGE_ONLY_RETRY_INSTRUCTION_ZH if strict_image_only else IMAGE_ONLY_INSTRUCTION_ZH)
+        if language == "zh"
+        else (IMAGE_ONLY_RETRY_INSTRUCTION_EN if strict_image_only else IMAGE_ONLY_INSTRUCTION_EN)
+    )
     return "\n\n".join(part for part in parts if part)
 
 
