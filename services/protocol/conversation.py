@@ -707,23 +707,53 @@ def extract_conversation_ids(payload: str) -> tuple[str, list[str], list[str]]:
     return conversation_id, file_ids, sediment_ids
 
 
-def is_image_tool_event(event: dict[str, Any]) -> bool:
-    value = event.get("v")
-    message = event.get("message") or (value.get("message") if isinstance(value, dict) else None)
-    if not isinstance(message, dict):
-        return False
-    metadata = message.get("metadata") or {}
-    author = message.get("author") or {}
-    return author.get("role") == "tool" and metadata.get("async_task_type") == "image_gen"
+def _asset_ids_from_text(value: Any) -> tuple[list[str], list[str]]:
+    text = str(value or "")
+    return (
+        re.findall(r"(file[-_][A-Za-z0-9]+)", text),
+        re.findall(r"sediment://([A-Za-z0-9_-]+)", text),
+    )
+
+
+def extract_event_asset_ids(event: dict[str, Any]) -> tuple[list[str], list[str]]:
+    file_ids: list[str] = []
+    sediment_ids: list[str] = []
+    for candidate in (event, event.get("v")):
+        if not isinstance(candidate, dict):
+            continue
+        message = candidate.get("message")
+        if not isinstance(message, dict):
+            continue
+        author = message.get("author") or {}
+        if str(author.get("role") or "") != "tool":
+            continue
+        content = message.get("content") or {}
+        parts = content.get("parts") or []
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if isinstance(part, dict):
+                for key in ("asset_pointer", "url", "text"):
+                    extracted_file_ids, extracted_sediment_ids = _asset_ids_from_text(part.get(key))
+                    add_unique(file_ids, extracted_file_ids)
+                    add_unique(sediment_ids, extracted_sediment_ids)
+            elif isinstance(part, str):
+                extracted_file_ids, extracted_sediment_ids = _asset_ids_from_text(part)
+                add_unique(file_ids, extracted_file_ids)
+                add_unique(sediment_ids, extracted_sediment_ids)
+    return file_ids, sediment_ids
 
 
 def update_conversation_state(state: ConversationState, payload: str, event: dict[str, Any] | None = None) -> None:
     conversation_id, file_ids, sediment_ids = extract_conversation_ids(payload)
     if conversation_id and not state.conversation_id:
         state.conversation_id = conversation_id
-    if isinstance(event, dict) and is_image_tool_event(event):
-        add_unique(state.file_ids, file_ids)
-        add_unique(state.sediment_ids, sediment_ids)
+    add_unique(state.file_ids, file_ids)
+    add_unique(state.sediment_ids, sediment_ids)
+    if isinstance(event, dict):
+        event_file_ids, event_sediment_ids = extract_event_asset_ids(event)
+        add_unique(state.file_ids, event_file_ids)
+        add_unique(state.sediment_ids, event_sediment_ids)
     if not isinstance(event, dict):
         return
     state.conversation_id = str(event.get("conversation_id") or state.conversation_id)

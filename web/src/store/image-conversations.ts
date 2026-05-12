@@ -12,6 +12,8 @@ export type StoredReferenceImage = {
   dataUrl: string;
 };
 
+export type ReferenceImageSource = "user" | "template" | "history";
+
 export type StoredImage = {
   id: string;
   taskId?: string;
@@ -30,6 +32,7 @@ export type ImageTurn = {
   model: ImageModel;
   mode: ImageConversationMode;
   referenceImages: StoredReferenceImage[];
+  referenceImageSources?: ReferenceImageSource[];
   count: number;
   size: string;
   images: StoredImage[];
@@ -134,6 +137,11 @@ function normalizeTurn(turn: ImageTurn & Record<string, unknown>): ImageTurn {
     model: (turn.model as ImageModel) || "gpt-image-2",
     mode: turn.mode === "edit" ? "edit" : "generate",
     referenceImages: getLegacyReferenceImages(turn),
+    referenceImageSources: Array.isArray(turn.referenceImageSources)
+      ? turn.referenceImageSources.filter(
+          (source): source is ReferenceImageSource => source === "user" || source === "template" || source === "history",
+        )
+      : undefined,
     count: Math.max(1, Number(turn.count || normalizedImages.length || 1)),
     size: typeof turn.size === "string" ? turn.size : "",
     images: normalizedImages,

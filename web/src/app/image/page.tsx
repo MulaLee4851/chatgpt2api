@@ -41,6 +41,7 @@ import {
   type ImageConversationMode,
   type ImageTurn,
   type ImageTurnStatus,
+  type ReferenceImageSource,
   type StoredImage,
   type StoredReferenceImage,
 } from "@/store/image-conversations";
@@ -165,6 +166,20 @@ async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: 
       dataUrl: await readFileAsDataUrl(file),
     },
     file,
+  };
+}
+
+type ReferenceImageEntry = {
+  file: File;
+  preview: StoredReferenceImage;
+  source: ReferenceImageSource;
+};
+
+function unzipReferenceImageEntries(entries: ReferenceImageEntry[]) {
+  return {
+    files: entries.map((entry) => entry.file),
+    previews: entries.map((entry) => entry.preview),
+    sources: entries.map((entry) => entry.source),
   };
 }
 
@@ -399,6 +414,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
   const resultsViewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const referenceEntriesRef = useRef<ReferenceImageEntry[]>([]);
 
   const [authSession, setAuthSession] = useState(session);
   const [imagePrompt, setImagePrompt] = useState("");
@@ -407,7 +423,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [referenceImageFiles, setReferenceImageFiles] = useState<File[]>([]);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
-  const [referenceImageSources, setReferenceImageSources] = useState<Array<"user" | "template" | "history">>([]);
+  const [referenceImageSources, setReferenceImageSources] = useState<ReferenceImageSource[]>([]);
   const [templates, setTemplates] = useState<ImageTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [templateFieldValues, setTemplateFieldValues] = useState<Record<string, string>>({});
@@ -429,6 +445,24 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
 
   const remainingImages = useMemo(() => getRemainingImages(authSession), [authSession]);
   const availableQuota = useMemo(() => formatAvailableQuota(authSession), [authSession]);
+
+  const setReferenceEntries = useCallback((entries: ReferenceImageEntry[]) => {
+    referenceEntriesRef.current = entries;
+    const next = unzipReferenceImageEntries(entries);
+    setReferenceImageFiles(next.files);
+    setReferenceImages(next.previews);
+    setReferenceImageSources(next.sources);
+    if (next.files.length === 0 && fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }, []);
+
+  const updateReferenceEntries = useCallback(
+    (updater: (entries: ReferenceImageEntry[]) => ReferenceImageEntry[]) => {
+      setReferenceEntries(updater(referenceEntriesRef.current));
+    },
+    [setReferenceEntries],
+  );
   const maxSelectableImageCount = useMemo(() => {
     if (remainingImages == null) {
       return 100;
@@ -658,24 +692,14 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
     setImagePrompt("");
     setSelectedTemplateId("");
     setTemplateFieldValues({});
-    setReferenceImageFiles([]);
-    setReferenceImages([]);
-    setReferenceImageSources([]);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  }, []);
+    setReferenceEntries([]);
+  }, [setReferenceEntries]);
 
   const clearSelectedTemplate = useCallback(() => {
     setSelectedTemplateId("");
     setTemplateFieldValues({});
-    setReferenceImageFiles((prev) => prev.filter((_, index) => referenceImageSources[index] !== "template"));
-    setReferenceImages((prev) => prev.filter((_, index) => referenceImageSources[index] !== "template"));
-    setReferenceImageSources((prev) => prev.filter((source) => source !== "template"));
-    if (!referenceImageSources.some((source) => source !== "template") && fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  }, [referenceImageSources]);
+    updateReferenceEntries((entries) => entries.filter((entry) => entry.source !== "template"));
+  }, [updateReferenceEntries]);
 
   const resetComposer = useCallback(() => {
     clearComposerInputs();
@@ -748,17 +772,13 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         setImagePrompt(template.prompts.positive);
         setImageCount(clampImageCount(String(template.defaults.count || 1), maxSelectableImageCount));
         setImageSize(template.defaults.size || "");
-        setReferenceImageFiles((prev) => [
-          ...prev.filter((_, index) => referenceImageSources[index] !== "template"),
-          ...templateAssets.map((item) => item.file),
-        ]);
-        setReferenceImages((prev) => [
-          ...prev.filter((_, index) => referenceImageSources[index] !== "template"),
-          ...templateAssets.map((item) => item.referenceImage),
-        ]);
-        setReferenceImageSources((prev) => [
-          ...prev.filter((source) => source !== "template"),
-          ...templateAssets.map(() => "template" as const),
+        updateReferenceEntries((entries) => [
+          ...entries.filter((entry) => entry.source !== "template"),
+          ...templateAssets.map((item) => ({
+            file: item.file,
+            preview: item.referenceImage,
+            source: "template" as const,
+          })),
         ]);
         setIsTemplatePickerOpen(false);
         if (fileInputRef.current) {
@@ -771,7 +791,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         toast.error(message);
       }
     },
-    [clearSelectedTemplate, maxSelectableImageCount, referenceImageSources, templates],
+    [clearSelectedTemplate, maxSelectableImageCount, templates, updateReferenceEntries],
   );
 
   const handleCreateDraft = () => {
@@ -902,7 +922,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
     await handleDeleteConversation(target.id);
   };
 
-  const appendReferenceImages = useCallback(async (files: File[], source: "user" | "template" | "history" = "user") => {
+  const appendReferenceImages = useCallback(async (files: File[], source: ReferenceImageSource = "user") => {
     if (files.length === 0) {
       return;
     }
@@ -916,9 +936,14 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         })),
       );
 
-      setReferenceImageFiles((prev) => [...prev, ...files]);
-      setReferenceImages((prev) => [...prev, ...previews]);
-      setReferenceImageSources((prev) => [...prev, ...files.map(() => source)]);
+      updateReferenceEntries((entries) => [
+        ...entries,
+        ...files.map((file, index) => ({
+          file,
+          preview: previews[index],
+          source,
+        })),
+      ]);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -926,7 +951,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
       const message = error instanceof Error ? error.message : "读取参考图失败";
       toast.error(message);
     }
-  }, []);
+  }, [updateReferenceEntries]);
 
   const handleReferenceImageChange = useCallback(
     async (files: File[]) => {
@@ -940,16 +965,8 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
   );
 
   const handleRemoveReferenceImage = useCallback((index: number) => {
-    setReferenceImageFiles((prev) => {
-      const next = prev.filter((_, currentIndex) => currentIndex !== index);
-      if (next.length === 0 && fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-      return next;
-    });
-    setReferenceImages((prev) => prev.filter((_, currentIndex) => currentIndex !== index));
-    setReferenceImageSources((prev) => prev.filter((_, currentIndex) => currentIndex !== index));
-  }, []);
+    updateReferenceEntries((entries) => entries.filter((_, currentIndex) => currentIndex !== index));
+  }, [updateReferenceEntries]);
 
   const handleContinueEdit = useCallback(
     async (conversationId: string, image: StoredImage | StoredReferenceImage) => {
@@ -968,10 +985,14 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         setSelectedConversationId(conversationId);
         setSelectedTemplateId("");
         setTemplateFieldValues({});
-
-        setReferenceImages((prev) => [...prev, nextReference.referenceImage]);
-        setReferenceImageFiles((prev) => [...prev, nextReference.file]);
-        setReferenceImageSources((prev) => [...prev, "history"]);
+        updateReferenceEntries((entries) => [
+          ...entries,
+          {
+            file: nextReference.file,
+            preview: nextReference.referenceImage,
+            source: "history",
+          },
+        ]);
         setImagePrompt("");
         textareaRef.current?.focus();
         toast.success("已加入当前参考图，继续输入描述即可编辑");
@@ -980,7 +1001,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         toast.error(message);
       }
     },
-    [],
+    [updateReferenceEntries],
   );
 
   const handleReuseTurnConfig = useCallback(async (conversationId: string, turnId: string) => {
@@ -996,17 +1017,19 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
     setImagePrompt(turn.prompt);
     setImageCount(clampImageCount(String(Math.max(1, turn.count || turn.images.length || 1)), maxSelectableImageCount));
     setImageSize(turn.size);
-    setReferenceImages(turn.referenceImages);
-    setReferenceImageFiles(
-      turn.referenceImages.map((image) => dataUrlToFile(image.dataUrl, image.name, image.type)),
+    setReferenceEntries(
+      turn.referenceImages.map((image, index) => ({
+        file: dataUrlToFile(image.dataUrl, image.name, image.type),
+        preview: image,
+        source: turn.referenceImageSources?.[index] ?? "history",
+      })),
     );
-    setReferenceImageSources(turn.referenceImages.map(() => "history"));
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
     textareaRef.current?.focus();
     toast.success("已复用这条提示词配置");
-  }, [maxSelectableImageCount]);
+  }, [maxSelectableImageCount, setReferenceEntries]);
 
   const openLightbox = useCallback((images: ImageLightboxItem[], index: number) => {
     if (images.length === 0) {
@@ -1207,8 +1230,9 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         id: nextTurnId,
         prompt: sourceTurn.prompt,
         model: sourceTurn.model,
-        mode: sourceTurn.mode,
+        mode: sourceTurn.referenceImages.length > 0 ? "edit" : sourceTurn.mode,
         referenceImages: sourceTurn.referenceImages,
+        referenceImageSources: sourceTurn.referenceImageSources,
         count,
         size: sourceTurn.size,
         images: createLoadingImages(nextTurnId, count),
@@ -1309,8 +1333,9 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
       return;
     }
 
+    const hasReferenceImages = referenceImageFiles.length > 0;
     const effectiveImageMode: ImageConversationMode =
-      selectedTemplate?.mode === "edit" || referenceImageSources.includes("user") ? "edit" : "generate";
+      selectedTemplate?.mode === "edit" || hasReferenceImages ? "edit" : "generate";
     const requiresUserOriginal = selectedTemplate?.references.some(
       (reference) => reference.type === "original" && reference.required && !reference.asset_url,
     );
@@ -1335,6 +1360,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
       model: "gpt-image-2",
       mode: effectiveImageMode,
       referenceImages: effectiveImageMode === "edit" ? referenceImages : [],
+      referenceImageSources: effectiveImageMode === "edit" ? referenceImageSources : [],
       count: parsedCount,
       size: imageSize,
       images: createLoadingImages(turnId, parsedCount),
