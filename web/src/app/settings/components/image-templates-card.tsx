@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ImagePlus, LoaderCircle, Pencil, Plus, Tag, Trash2, X } from "lucide-react";
+import { Eye, ImagePlus, LoaderCircle, Pencil, Plus, Tag, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
+import { ImageLightbox } from "@/components/image-lightbox";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -164,6 +166,61 @@ function splitTags(value: string) {
     .filter(Boolean);
 }
 
+function buildPayloadFromTemplate(template: ImageTemplate, status: ImageTemplatePayload["status"]): ImageTemplatePayload {
+  return {
+    name: template.name,
+    description: template.description,
+    mode: template.mode,
+    prompts: {
+      positive: template.prompts.positive,
+      negative: template.prompts.negative,
+    },
+    defaults: {
+      count: template.defaults.count,
+      size: template.defaults.size,
+    },
+    placeholders: template.placeholders.map((placeholder) => ({
+      key: placeholder.key,
+      label: placeholder.label,
+      type: placeholder.type,
+      default_value: placeholder.default_value,
+      required: placeholder.required,
+      help: placeholder.help,
+      validation: {
+        min_length: placeholder.validation.min_length ?? null,
+        max_length: placeholder.validation.max_length ?? null,
+        min: placeholder.validation.min ?? null,
+        max: placeholder.validation.max ?? null,
+        regex: placeholder.validation.regex || "",
+        options: placeholder.validation.options || [],
+      },
+    })),
+    references: template.references.map((reference) => ({
+      key: reference.key,
+      label: reference.label,
+      type: reference.type,
+      required: reference.required,
+      weight: reference.weight,
+      help: reference.help,
+      asset_rel: reference.asset_rel,
+      asset_url: reference.asset_url || null,
+    })),
+    tags: [...template.tags],
+    status,
+    version: template.version,
+  };
+}
+
+function getTemplateStatusMeta(status: ImageTemplate["status"]) {
+  if (status === "active") {
+    return { label: "已启用", variant: "success" as const };
+  }
+  if (status === "draft") {
+    return { label: "草稿", variant: "warning" as const };
+  }
+  return { label: "已停用", variant: "secondary" as const };
+}
+
 export function ImageTemplatesCard() {
   const assetInputRef = useRef<HTMLInputElement>(null);
   const [templates, setTemplates] = useState<ImageTemplate[]>([]);
@@ -172,8 +229,10 @@ export function ImageTemplatesCard() {
   const [isSaving, setIsSaving] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<ImageTemplate | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const [uploading, setUploading] = useState<AssetTarget | null>(null);
   const [pendingAssetTarget, setPendingAssetTarget] = useState<AssetTarget | null>(null);
+  const [lightboxTemplate, setLightboxTemplate] = useState<ImageTemplate | null>(null);
   const [tagsText, setTagsText] = useState("");
   const [form, setForm] = useState<TemplateFormState>(createDefaultForm());
 
@@ -381,6 +440,31 @@ export function ImageTemplatesCard() {
     }
   };
 
+  const handleToggleTemplateStatus = async (template: ImageTemplate) => {
+    const nextStatus = template.status === "active" ? "archived" : "active";
+    setTogglingId(template.id);
+    try {
+      const data = await updateImageTemplate(template.id, buildPayloadFromTemplate(template, nextStatus));
+      setTemplates(data.items);
+      toast.success(nextStatus === "active" ? "模板已启用" : "模板已停用");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "切换模板状态失败");
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const lightboxImages = lightboxTemplate?.cover_image_url
+    ? [
+        {
+          id: `${lightboxTemplate.id}-cover`,
+          src: lightboxTemplate.cover_image_url,
+          sizeLabel: "封面",
+          dimensions: lightboxTemplate.name,
+        },
+      ]
+    : [];
+
   return (
     <>
       <input
@@ -417,18 +501,64 @@ export function ImageTemplatesCard() {
           ) : (
             <div className="space-y-3">
               {sortedTemplates.map((template) => {
-                const busy = deletingId === template.id || uploading?.id === template.id;
+                const busy = deletingId === template.id || togglingId === template.id || uploading?.id === template.id;
                 return (
                   <div key={template.id} className="rounded-3xl border border-stone-200/80 bg-stone-50/70 p-4 sm:p-5">
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0 flex-1 space-y-3">
                         <div className="flex flex-wrap items-start gap-3">
-                          <div className="flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-stone-200 bg-white text-xs text-stone-400">
-                            {template.cover_image_url ? <img src={template.cover_image_url} alt={`${template.name} 封面`} className="h-full w-full object-cover" /> : "无封面"}
+                          <div className="w-full max-w-[168px] shrink-0 space-y-2">
+                            <button
+                              type="button"
+                              className="group flex h-28 w-full items-center justify-center overflow-hidden rounded-2xl border border-stone-200 bg-white text-xs text-stone-400 transition hover:border-sky-300 disabled:cursor-default"
+                              disabled={!template.cover_image_url}
+                              onClick={() => setLightboxTemplate(template)}
+                            >
+                              {template.cover_image_url ? (
+                                <div className="relative h-full w-full">
+                                  <img src={template.cover_image_url} alt={`${template.name} 封面`} className="h-full w-full object-cover" />
+                                  <div className="absolute inset-0 flex items-center justify-center bg-slate-950/0 text-white opacity-0 transition group-hover:bg-slate-950/25 group-hover:opacity-100">
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-black/45 px-2.5 py-1 text-[11px] font-medium">
+                                      <Eye className="size-3.5" />查看封面
+                                    </span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="space-y-1 text-center">
+                                  <div className="font-medium text-stone-500">暂无封面</div>
+                                  <div className="text-[11px] text-stone-400">上传后可点击放大查看</div>
+                                </div>
+                              )}
+                            </button>
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="rounded-xl"
+                                disabled={busy}
+                                onClick={() => {
+                                  setPendingAssetTarget({ id: template.id, kind: "cover" });
+                                  assetInputRef.current?.click();
+                                }}
+                              >
+                                <ImagePlus className="mr-2 size-4" />{template.cover_image_url ? "替换封面" : "上传封面"}
+                              </Button>
+                              {template.cover_image_url ? (
+                                <>
+                                  <Button type="button" variant="outline" className="rounded-xl" disabled={busy} onClick={() => setLightboxTemplate(template)}>
+                                    <Eye className="mr-2 size-4" />查看
+                                  </Button>
+                                  <Button type="button" variant="outline" className="rounded-xl text-rose-600" disabled={busy} onClick={() => void handleDeleteCover(template)}>
+                                    删除
+                                  </Button>
+                                </>
+                              ) : null}
+                            </div>
                           </div>
                           <div className="min-w-0 flex-1 space-y-2">
                             <div className="flex flex-wrap items-center gap-2">
                               <h3 className="text-base font-semibold text-stone-950">{template.name}</h3>
+                              <Badge variant={getTemplateStatusMeta(template.status).variant}>{getTemplateStatusMeta(template.status).label}</Badge>
                               <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600">{describeTemplate(template)}</span>
                             </div>
                             {template.description ? <p className="text-sm leading-6 text-stone-500">{template.description}</p> : null}
@@ -496,7 +626,7 @@ export function ImageTemplatesCard() {
                                               assetInputRef.current?.click();
                                             }}
                                           >
-                                            <ImagePlus className="mr-2 size-4" />上传图片
+                                            <ImagePlus className="mr-2 size-4" />{reference.asset_url ? "替换图片" : "上传图片"}
                                           </Button>
                                           {reference.asset_url ? (
                                             <Button
@@ -519,30 +649,14 @@ export function ImageTemplatesCard() {
                           </div>
                         </div>
 
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="rounded-xl"
-                            disabled={busy}
-                            onClick={() => {
-                              setPendingAssetTarget({ id: template.id, kind: "cover" });
-                              assetInputRef.current?.click();
-                            }}
-                          >
-                            <ImagePlus className="mr-2 size-4" />上传封面
-                          </Button>
-                          {template.cover_image_url ? (
-                            <Button type="button" variant="outline" className="rounded-xl text-rose-600" disabled={busy} onClick={() => void handleDeleteCover(template)}>
-                              删除封面
-                            </Button>
-                          ) : null}
-                        </div>
-
                         <div className="text-xs text-stone-400">创建人 {template.created_by || "--"} · 修改人 {template.updated_by || "--"} · 更新时间 {template.updated_at}</div>
                       </div>
 
-                      <div className="flex shrink-0 items-center gap-2">
+                      <div className="flex shrink-0 flex-wrap items-center gap-2 lg:max-w-[220px] lg:justify-end">
+                        <Button type="button" variant="outline" className="rounded-xl" onClick={() => void handleToggleTemplateStatus(template)} disabled={busy || togglingId === template.id}>
+                          {togglingId === template.id ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : null}
+                          {template.status === "active" ? "停用模板" : "启用模板"}
+                        </Button>
                         <Button type="button" variant="outline" className="rounded-xl" onClick={() => openEditDialog(template)} disabled={busy}>
                           <Pencil className="mr-2 size-4" />编辑
                         </Button>
@@ -558,6 +672,18 @@ export function ImageTemplatesCard() {
           )}
         </CardContent>
       </Card>
+
+      <ImageLightbox
+        images={lightboxImages}
+        currentIndex={0}
+        open={Boolean(lightboxTemplate)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setLightboxTemplate(null);
+          }
+        }}
+        onIndexChange={() => {}}
+      />
 
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="max-h-[88vh] overflow-y-auto rounded-[28px] border-white/80 bg-white p-0 sm:max-w-5xl">
