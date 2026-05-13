@@ -49,8 +49,9 @@ def create_app() -> FastAPI:
     app.include_router(system.create_router(app_version))
     if config.images_dir.exists():
         app.mount("/images", StaticFiles(directory=str(config.images_dir)), name="images")
-    if config.image_templates_dir.exists():
-        app.mount("/template-images", StaticFiles(directory=str(config.image_templates_dir)), name="template-images")
+    template_assets_dir = config.image_templates_dir / "assets"
+    if template_assets_dir.exists():
+        app.mount("/template-images", StaticFiles(directory=str(template_assets_dir)), name="template-images")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_web(full_path: str):
