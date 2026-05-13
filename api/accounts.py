@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
@@ -39,6 +40,7 @@ class UserKeyPermissionsRequest(BaseModel):
 
 class UserKeyLimitsRequest(BaseModel):
     expires_at: Optional[str] = Field(...)
+    duration_days: Optional[int] = Field(default=None, ge=1)
     max_tokens: Optional[int] = Field(..., ge=0)
     max_images: Optional[int] = Field(..., ge=0)
 
@@ -114,6 +116,13 @@ class Sub2APIImportRequest(BaseModel):
     account_ids: list[str] = Field(default_factory=list)
 
 
+def _resolve_key_limits(body: UserKeyLimitsRequest) -> dict[str, object]:
+    limits = body.model_dump(mode="python", exclude={"duration_days"})
+    if body.duration_days is not None:
+        limits["expires_at"] = (datetime.now(timezone.utc) + timedelta(days=body.duration_days)).isoformat()
+    return limits
+
+
 def create_router() -> APIRouter:
     router = APIRouter()
 
@@ -130,7 +139,7 @@ def create_router() -> APIRouter:
                 role="user",
                 name=body.name,
                 permissions=body.permissions.model_dump(mode="python"),
-                limits=body.limits.model_dump(mode="python"),
+                limits=_resolve_key_limits(body.limits),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
