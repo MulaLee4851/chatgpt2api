@@ -195,6 +195,7 @@ def _truncate_text(value: object, limit: int = 1000) -> str:
 
 DEBUG_EVENT_TAIL_LIMIT = 12
 DEBUG_TEXT_LIMIT = 1200
+ASYNC_IMAGE_POLL_TIMEOUT_SECS = max(300, int(config.image_poll_timeout_secs or 120))
 
 
 def _clip_debug_value(value: Any, depth: int = 0) -> Any:
@@ -226,6 +227,29 @@ def _append_debug_event(bucket: list[dict[str, Any]], item: dict[str, Any]) -> N
         del bucket[:-DEBUG_EVENT_TAIL_LIMIT]
 
 
+def _extract_async_image_task_id(raw_events_tail: list[dict[str, Any]]) -> str:
+    for event in reversed(raw_events_tail):
+        if not isinstance(event, dict):
+            continue
+        metadata = None
+        if isinstance(event.get("metadata"), dict):
+            metadata = event.get("metadata")
+        else:
+            value = event.get("v")
+            if isinstance(value, dict):
+                message = value.get("message")
+                if isinstance(message, dict):
+                    maybe_metadata = message.get("metadata")
+                    if isinstance(maybe_metadata, dict):
+                        metadata = maybe_metadata
+        if not isinstance(metadata, dict):
+            continue
+        task_id = str(metadata.get("image_gen_task_id") or "").strip()
+        if task_id:
+            return task_id
+    return ""
+
+
 def _log_image_debug_snapshot(
     request: ConversationRequest,
     *,
@@ -244,6 +268,7 @@ def _log_image_debug_snapshot(
         {
             "reason": reason,
             "conversation_id": conversation_id,
+            "account_id": request.account_id,
             "model": request.model,
             "prompt_excerpt": _truncate_text(request.prompt, 600),
             "tool_invoked": last.get("tool_invoked"),
@@ -330,6 +355,7 @@ class ConversationRequest:
     base_url: str | None = None
     message_as_error: bool = False
     image_retry_count: int = 0
+    account_id: str = ""
 
 
 @dataclass
@@ -951,14 +977,18 @@ def stream_image_outputs(
     file_ids = [str(item) for item in last.get("file_ids") or []]
     sediment_ids = [str(item) for item in last.get("sediment_ids") or []]
     message = str(last.get("text") or "").strip()
+    async_image_task_id = _extract_async_image_task_id(raw_events_tail)
+    has_async_image_pending = bool(async_image_task_id)
     is_text_response = last.get("tool_invoked") is False or last.get("turn_use_case") == "text"
     logger.info({
         "event": "image_stream_resolve_start",
         "conversation_id": conversation_id,
+        "account_id": request.account_id,
         "file_ids": file_ids,
         "sediment_ids": sediment_ids,
         "tool_invoked": last.get("tool_invoked"),
         "turn_use_case": last.get("turn_use_case"),
+        "async_image_task_id": async_image_task_id,
     })
     if message and not file_ids and not sediment_ids and (last.get("blocked") or is_text_response):
         should_retry = bool(message) and not last.get("blocked") and is_text_response and request.image_retry_count < 1
@@ -994,6 +1024,20 @@ def stream_image_outputs(
         return
 
     image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
+    if not image_urls and has_async_image_pending and conversation_id:
+        logger.info({
+            "event": "image_stream_async_poll_retry",
+            "conversation_id": conversation_id,
+            "account_id": request.account_id,
+            "async_image_task_id": async_image_task_id,
+            "timeout_secs": ASYNC_IMAGE_POLL_TIMEOUT_SECS,
+        })
+        image_urls = backend.resolve_conversation_image_urls(
+            conversation_id,
+            file_ids,
+            sediment_ids,
+            poll_timeout_secs=ASYNC_IMAGE_POLL_TIMEOUT_SECS,
+        )
     if image_urls:
         image_items = [
             {"b64_json": base64.b64encode(image_data).decode("ascii")}
@@ -1047,6 +1091,8 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
             returned_message = False
             returned_result = False
             try:
+                account = account_service.get_account(token) or {}
+                request.account_id = str(account.get("user_id") or "")
                 backend = OpenAIBackendAPI(access_token=token)
                 for output in stream_image_outputs(backend, request, index, request.n):
                     if output.kind == "message" and request.message_as_error:

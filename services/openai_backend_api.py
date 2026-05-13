@@ -772,13 +772,18 @@ class OpenAIBackendAPI:
             file_ids: list[str],
             sediment_ids: list[str],
             poll: bool = True,
+            poll_timeout_secs: float | None = None,
     ) -> list[str]:
         file_ids = [item for item in file_ids if item != "file_upload"]
         sediment_ids = list(sediment_ids)
         if poll and conversation_id and not file_ids and not sediment_ids:
-            logger.info({"event": "image_resolve_poll_needed", "conversation_id": conversation_id})
-            polled_file_ids, polled_sediment_ids = self._poll_image_results(conversation_id,
-                                                                            config.image_poll_timeout_secs)
+            timeout_secs = float(poll_timeout_secs or config.image_poll_timeout_secs)
+            logger.info({
+                "event": "image_resolve_poll_needed",
+                "conversation_id": conversation_id,
+                "timeout_secs": timeout_secs,
+            })
+            polled_file_ids, polled_sediment_ids = self._poll_image_results(conversation_id, timeout_secs)
             file_ids.extend(item for item in polled_file_ids if item and item not in file_ids)
             sediment_ids.extend(item for item in polled_sediment_ids if item and item not in sediment_ids)
         return self._resolve_image_urls(conversation_id, file_ids, sediment_ids)
