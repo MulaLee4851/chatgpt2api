@@ -236,6 +236,7 @@ export function UserKeysCard() {
   const [isLoading, setIsLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [name, setName] = useState("");
+  const [createCount, setCreateCount] = useState("1");
   const [createPermissions, setCreatePermissions] = useState<UserKeyPermissions>(createDefaultPermissions);
   const [createLimitsForm, setCreateLimitsForm] = useState<LimitFormState>(createDefaultLimitsForm);
   const [isCreating, setIsCreating] = useState(false);
@@ -281,20 +282,28 @@ export function UserKeysCard() {
       return;
     }
 
+    const normalizedCount = Number(createCount.trim());
+    if (!Number.isInteger(normalizedCount) || normalizedCount < 1 || normalizedCount > 100) {
+      toast.error("创建数量必须是 1 到 100 之间的整数");
+      return;
+    }
+
     setIsCreating(true);
     try {
       const data = await createUserKey({
         name: name.trim(),
         permissions: createPermissions,
         limits,
+        count: normalizedCount,
       });
       setItems(data.items);
       setRevealedKey(data.key);
       setName("");
+      setCreateCount("1");
       setCreatePermissions(createDefaultPermissions());
       setCreateLimitsForm(createDefaultLimitsForm());
       setIsDialogOpen(false);
-      toast.success("用户密钥已创建");
+      toast.success(normalizedCount > 1 ? `已批量创建 ${normalizedCount} 个用户密钥` : "用户密钥已创建");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "创建用户密钥失败");
     } finally {
@@ -532,14 +541,28 @@ export function UserKeysCard() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-5">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-stone-700">名称（可选）</label>
-              <Input
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="例如：设计同学 A、运营临时账号"
-                className="h-11 rounded-xl border-stone-200 bg-white"
-              />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-stone-700">名称（可选）</label>
+                <Input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder="例如：设计同学 A、运营临时账号"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-stone-700">创建数量</label>
+                <Input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={createCount}
+                  onChange={(event) => setCreateCount(event.target.value)}
+                  placeholder="1"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+              </div>
             </div>
 
             <div className="space-y-3 rounded-2xl border border-stone-200 p-4">

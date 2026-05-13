@@ -49,6 +49,7 @@ class UserKeyCreateRequest(BaseModel):
     name: str = ""
     permissions: UserKeyPermissionsRequest
     limits: UserKeyLimitsRequest
+    count: int = Field(default=1, ge=1, le=100)
 
 
 class UserKeyUpdateRequest(BaseModel):
@@ -123,6 +124,12 @@ def _resolve_key_limits(body: UserKeyLimitsRequest) -> dict[str, object]:
     return limits
 
 
+def _resolve_batch_key_name(base_name: str, index: int, count: int) -> str:
+    if count <= 1 or not base_name:
+        return base_name
+    return f"{base_name} #{index + 1}"
+
+
 def create_router() -> APIRouter:
     router = APIRouter()
 
@@ -134,16 +141,28 @@ def create_router() -> APIRouter:
     @router.post("/api/auth/users")
     async def create_user_key(body: UserKeyCreateRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
+        permissions = body.permissions.model_dump(mode="python")
+        limits = _resolve_key_limits(body.limits)
+        created_items: list[dict[str, object]] = []
+        raw_keys: list[str] = []
         try:
-            item, raw_key = auth_service.create_key(
-                role="user",
-                name=body.name,
-                permissions=body.permissions.model_dump(mode="python"),
-                limits=_resolve_key_limits(body.limits),
-            )
+            for index in range(body.count):
+                item, raw_key = auth_service.create_key(
+                    role="user",
+                    name=_resolve_batch_key_name(body.name, index, body.count),
+                    permissions=permissions,
+                    limits=limits,
+                )
+                created_items.append(item)
+                raw_keys.append(raw_key)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-        return {"item": item, "key": raw_key, "items": auth_service.list_keys(role="user")}
+        return {
+            "item": created_items[0],
+            "key": ",".join(raw_keys),
+            "created_items": created_items,
+            "items": auth_service.list_keys(role="user"),
+        }
 
     @router.post("/api/auth/users/{key_id}")
     async def update_user_key(

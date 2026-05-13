@@ -852,8 +852,9 @@ export async function createUserKey(body: {
   name: string;
   permissions: UserKeyPermissions;
   limits: UserKeyLimits;
+  count?: number;
 }) {
-  return httpRequest<{ item: UserKey; key: string; items: UserKey[] }>("/api/auth/users", {
+  return httpRequest<{ item: UserKey; key: string; created_items: UserKey[]; items: UserKey[] }>("/api/auth/users", {
     method: "POST",
     body,
   });
