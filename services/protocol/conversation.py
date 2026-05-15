@@ -349,6 +349,26 @@ def format_image_result(
     return result
 
 
+def partition_output_images_by_input_hash(
+    downloaded_images: list[bytes],
+    output_image_hashes: list[str],
+    input_image_hashes: list[str],
+) -> tuple[list[bytes], list[str], list[bytes], list[str]]:
+    input_hash_set = set(input_image_hashes)
+    matched_images: list[bytes] = []
+    matched_hashes: list[str] = []
+    non_matched_images: list[bytes] = []
+    non_matched_hashes: list[str] = []
+    for image_data, image_hash in zip(downloaded_images, output_image_hashes, strict=False):
+        if image_hash in input_hash_set:
+            matched_images.append(image_data)
+            matched_hashes.append(image_hash)
+        else:
+            non_matched_images.append(image_data)
+            non_matched_hashes.append(image_hash)
+    return matched_images, matched_hashes, non_matched_images, non_matched_hashes
+
+
 @dataclass
 class ConversationRequest:
     model: str = "auto"
@@ -733,12 +753,9 @@ def update_source_state(state: ConversationState, event: dict[str, Any]) -> None
     rebuild_sources(state)
 
 
-def extract_conversation_ids(payload: str) -> tuple[str, list[str], list[str]]:
+def extract_conversation_id(payload: str) -> str:
     conversation_match = re.search(r'"conversation_id"\s*:\s*"([^"]+)"', payload)
-    conversation_id = conversation_match.group(1) if conversation_match else ""
-    file_ids = re.findall(r"(file[-_][A-Za-z0-9]+)", payload)
-    sediment_ids = re.findall(r"sediment://([A-Za-z0-9_-]+)", payload)
-    return conversation_id, file_ids, sediment_ids
+    return conversation_match.group(1) if conversation_match else ""
 
 
 def _asset_ids_from_text(value: Any) -> tuple[list[str], list[str]]:
@@ -766,24 +783,19 @@ def extract_event_asset_ids(event: dict[str, Any]) -> tuple[list[str], list[str]
         if not isinstance(parts, list):
             continue
         for part in parts:
-            if isinstance(part, dict):
-                for key in ("asset_pointer", "url", "text"):
-                    extracted_file_ids, extracted_sediment_ids = _asset_ids_from_text(part.get(key))
-                    add_unique(file_ids, extracted_file_ids)
-                    add_unique(sediment_ids, extracted_sediment_ids)
-            elif isinstance(part, str):
-                extracted_file_ids, extracted_sediment_ids = _asset_ids_from_text(part)
+            if not isinstance(part, dict):
+                continue
+            for key in ("asset_pointer", "url"):
+                extracted_file_ids, extracted_sediment_ids = _asset_ids_from_text(part.get(key))
                 add_unique(file_ids, extracted_file_ids)
                 add_unique(sediment_ids, extracted_sediment_ids)
     return file_ids, sediment_ids
 
 
 def update_conversation_state(state: ConversationState, payload: str, event: dict[str, Any] | None = None) -> None:
-    conversation_id, file_ids, sediment_ids = extract_conversation_ids(payload)
+    conversation_id = extract_conversation_id(payload)
     if conversation_id and not state.conversation_id:
         state.conversation_id = conversation_id
-    add_unique(state.file_ids, file_ids)
-    add_unique(state.sediment_ids, sediment_ids)
     if isinstance(event, dict):
         event_file_ids, event_sediment_ids = extract_event_asset_ids(event)
         add_unique(state.file_ids, event_file_ids)
@@ -983,8 +995,9 @@ def stream_image_outputs(
 
     conversation_id = str(last.get("conversation_id") or "")
     raw_file_ids = [str(item) for item in last.get("file_ids") or []]
+    raw_sediment_ids = [str(item) for item in last.get("sediment_ids") or []]
     file_ids = _filter_effective_image_file_ids(raw_file_ids)
-    sediment_ids = [str(item) for item in last.get("sediment_ids") or []]
+    sediment_ids = [item for item in raw_sediment_ids if item and item not in file_ids]
     message = str(last.get("text") or "").strip()
     async_image_task_id = _extract_async_image_task_id(raw_events_tail)
     has_async_image_pending = bool(async_image_task_id)
@@ -1070,15 +1083,25 @@ def stream_image_outputs(
             "event": "image_stream_assets_resolved",
             "conversation_id": conversation_id,
             "account_id": request.account_id,
+            "candidate_file_ids": raw_file_ids,
+            "candidate_sediment_ids": raw_sediment_ids,
             "resolved_url_count": len(image_urls),
         })
         downloaded_images = backend.download_image_bytes(image_urls)
+        output_image_hashes = [hashlib.sha256(image_data).hexdigest() for image_data in downloaded_images]
+        matched_images, matched_output_hashes, non_matched_images, non_matched_hashes = partition_output_images_by_input_hash(
+            downloaded_images,
+            output_image_hashes,
+            request.input_image_hashes,
+        )
+        filtered_original_like_outputs = bool(matched_images and non_matched_images)
+        selected_images = non_matched_images if filtered_original_like_outputs else downloaded_images
+        selected_output_hashes = non_matched_hashes if filtered_original_like_outputs else output_image_hashes
         image_items = [
             {"b64_json": base64.b64encode(image_data).decode("ascii")}
-            for image_data in downloaded_images
+            for image_data in selected_images
         ]
-        output_image_hashes = [hashlib.sha256(image_data).hexdigest() for image_data in downloaded_images]
-        matched_hashes = sorted(set(request.input_image_hashes) & set(output_image_hashes))
+        matched_hashes = sorted(set(matched_output_hashes))
         if matched_hashes:
             _log_image_debug_snapshot(
                 request,
@@ -1095,15 +1118,21 @@ def stream_image_outputs(
                     "diagnosis": "疑似原图回退/未编辑产物",
                     "raw_file_ids": raw_file_ids,
                     "effective_file_ids": file_ids,
+                    "raw_sediment_ids": raw_sediment_ids,
+                    "effective_sediment_ids": sediment_ids,
                     "input_image_count": request.input_image_count,
                     "output_image_count": len(downloaded_images),
                     "input_image_hashes": request.input_image_hashes,
                     "output_image_hashes": output_image_hashes,
                     "matched_hashes": matched_hashes,
-                    "matched_count": len(matched_hashes),
+                    "matched_count": len(matched_images),
+                    "non_matched_count": len(non_matched_images),
+                    "returned_after_filter_count": len(selected_images),
+                    "filtered_original_like_outputs": filtered_original_like_outputs,
+                    "returned_output_hashes": selected_output_hashes,
                 },
             )
-            if message and (last.get("blocked") or is_text_response):
+            if message and (last.get("blocked") or is_text_response) and not non_matched_images:
                 error_text = message
                 if is_text_response and not last.get("blocked"):
                     error_text = f"上游未生成图片，而是返回补充说明：{message}"
