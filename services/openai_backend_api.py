@@ -13,6 +13,7 @@ from PIL import Image
 
 from services.account_service import account_service
 from services.config import config
+from services.content_filter import request_text
 from services.proxy_service import proxy_settings
 from utils.helper import ensure_ok, iter_sse_payloads, new_uuid
 from utils.log import logger
@@ -835,11 +836,22 @@ class OpenAIBackendAPI:
     ) -> Iterator[str]:
         if not self.access_token:
             raise RuntimeError("access_token is required for image endpoints")
+        logger.info({
+            "event": "image_upstream_request_start",
+            "model": model,
+            "reference_image_count": len(images),
+            "prompt_excerpt": request_text(prompt),
+        })
         references = [self._upload_image(image, f"image_{idx}.png") for idx, image in enumerate(images, start=1)]
         self._bootstrap()
         requirements = self._get_chat_requirements()
         conduit_token = self._prepare_image_conversation(prompt, requirements, model)
         response = self._start_image_generation(prompt, requirements, conduit_token, model, references)
+        logger.info({
+            "event": "image_upstream_request_stream_opened",
+            "model": model,
+            "reference_count": len(references),
+        })
         try:
             yield from iter_sse_payloads(response)
         finally:

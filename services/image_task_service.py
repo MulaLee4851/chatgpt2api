@@ -92,6 +92,13 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _log_image_task_stage(summary: str, detail: dict[str, Any]) -> None:
+    try:
+        log_service.add("image_upstream_debug", summary, detail)
+    except Exception:
+        pass
+
+
 class ImageTaskService:
     def __init__(
         self,
@@ -218,6 +225,19 @@ class ImageTaskService:
             should_start = True
 
         if should_start:
+            _log_image_task_stage(
+                "图片任务已入队",
+                {
+                    "reason": "task_queued",
+                    "task_key": key,
+                    "task_id": task_id,
+                    "owner_id": owner,
+                    "mode": mode,
+                    "model": task.get("model"),
+                    "size": task.get("size"),
+                    "request_preview": request_text(payload.get("prompt")),
+                },
+            )
             thread = threading.Thread(
                 target=self._run_task,
                 args=(key, mode, payload, dict(identity), _clean(payload.get("model"), "gpt-image-2")),
@@ -236,9 +256,30 @@ class ImageTaskService:
         model: str,
     ) -> None:
         started = time.time()
+        request_preview = request_text(payload.get("prompt"))
         self._update_task(key, status=TASK_STATUS_RUNNING, error="")
+        _log_image_task_stage(
+            "图片任务开始处理",
+            {
+                "reason": "task_worker_started",
+                "task_key": key,
+                "mode": mode,
+                "model": model,
+                "request_preview": request_preview,
+            },
+        )
         try:
             handler = self.edit_handler if mode == "edit" else self.generation_handler
+            _log_image_task_stage(
+                "图片任务开始请求上游",
+                {
+                    "reason": "task_upstream_request_started",
+                    "task_key": key,
+                    "mode": mode,
+                    "model": model,
+                    "request_preview": request_preview,
+                },
+            )
             result = handler(payload)
             if not isinstance(result, dict):
                 raise RuntimeError("image task returned streaming result unexpectedly")
@@ -246,15 +287,14 @@ class ImageTaskService:
             if not isinstance(data, list) or not data:
                 message = _clean(result.get("message"))
                 if not message:
-                    log_service.add(
-                        "image_upstream_debug",
+                    _log_image_task_stage(
                         "图片任务未拿到图片或说明文本",
                         {
                             "reason": "task_result_no_data_no_message",
                             "task_key": key,
                             "mode": mode,
                             "model": model,
-                            "request_preview": request_text(payload.get("prompt")),
+                            "request_preview": request_preview,
                             "result_keys": sorted(result.keys()),
                             "has_data": isinstance(data, list) and bool(data),
                             "has_message": False,
@@ -264,25 +304,50 @@ class ImageTaskService:
                 raise RuntimeError(message)
             _consume_identity_images(identity, len(data))
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="")
+            _log_image_task_stage(
+                "图片任务处理成功",
+                {
+                    "reason": "task_result_success",
+                    "task_key": key,
+                    "mode": mode,
+                    "model": model,
+                    "request_preview": request_preview,
+                    "image_count": len(data),
+                    "duration_ms": int((time.time() - started) * 1000),
+                    "urls": _collect_image_urls(data),
+                },
+            )
             self._log_call(
                 identity,
                 mode,
                 model,
                 started,
                 "调用完成",
-                request_preview=request_text(payload.get("prompt")),
+                request_preview=request_preview,
                 urls=_collect_image_urls(data),
             )
         except Exception as exc:
             error_message = str(exc) or "image task failed"
             self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
+            _log_image_task_stage(
+                "图片任务处理失败",
+                {
+                    "reason": "task_result_error",
+                    "task_key": key,
+                    "mode": mode,
+                    "model": model,
+                    "request_preview": request_preview,
+                    "error": error_message,
+                    "duration_ms": int((time.time() - started) * 1000),
+                },
+            )
             self._log_call(
                 identity,
                 mode,
                 model,
                 started,
                 "调用失败",
-                request_preview=request_text(payload.get("prompt")),
+                request_preview=request_preview,
                 status="failed",
                 error=error_message,
             )

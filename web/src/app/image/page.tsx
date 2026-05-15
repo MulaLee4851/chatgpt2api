@@ -254,6 +254,42 @@ function getImageErrorMessage(value: string | null | undefined) {
   return formatImageFailureMessage(value);
 }
 
+function isTransientTaskStatusMessage(value: string | null | undefined) {
+  const message = typeof value === "string" ? value.trim() : "";
+  if (!message) {
+    return false;
+  }
+  return ["网络连接失败", "请求超时", "状态查询失败", "网络波动", "稍后重试", "timeout", "network"].some((keyword) =>
+    message.toLowerCase().includes(keyword.toLowerCase()),
+  );
+}
+
+function shouldRecoverTaskStatus(image: StoredImage) {
+  if (!image.taskId) {
+    return false;
+  }
+  if (image.status === "loading") {
+    return true;
+  }
+  return image.status === "error" && isTransientTaskStatusMessage(image.error);
+}
+
+function isTransientTaskPollError(error: unknown) {
+  if (isRequestError(error)) {
+    if (error.isNetworkError || error.code === "ECONNABORTED") {
+      return true;
+    }
+    return error.status != null && [408, 425, 429, 499, 500, 502, 503, 504].includes(error.status);
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return ["timeout", "network", "502", "503", "504", "gateway", "连接", "超时"].some((keyword) =>
+    message.includes(keyword.toLowerCase()),
+  );
+}
+
 function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage {
   if (task.status === "success") {
     const first = task.data?.[0];
@@ -277,12 +313,20 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
   }
 
   if (task.status === "error") {
+    const error = getImageErrorMessage(task.error);
+    if (image.status === "error" && image.taskId === task.id && image.error === error) {
+      return image;
+    }
     return {
       ...image,
       taskId: task.id,
       status: "error",
-      error: getImageErrorMessage(task.error),
+      error,
     };
+  }
+
+  if (image.status === "loading" && image.taskId === task.id && !image.error) {
+    return image;
   }
 
   return {
@@ -341,7 +385,7 @@ async function syncConversationImageTasks(items: ImageConversation[]) {
         conversation.turns.flatMap((turn) =>
           turn.resultsDeleted
             ? []
-            : turn.images.flatMap((image) => (image.status === "loading" && image.taskId ? [image.taskId] : [])),
+            : turn.images.flatMap((image) => (shouldRecoverTaskStatus(image) ? [image.taskId || image.id] : [])),
         ),
       ),
     ),
@@ -362,14 +406,15 @@ async function syncConversationImageTasks(items: ImageConversation[]) {
     const turns = conversation.turns.map((turn) => {
       let turnChanged = false;
       const images = turn.images.map((image) => {
-        if (image.status !== "loading" || !image.taskId) {
+        if (!shouldRecoverTaskStatus(image)) {
           return image;
         }
-        const task = taskMap.get(image.taskId);
+        const taskId = image.taskId || image.id;
+        const task = taskMap.get(taskId);
         if (!task) {
           return image;
         }
-        const nextImage = taskDataToStoredImage(image, task);
+        const nextImage = taskDataToStoredImage({ ...image, taskId }, task);
         if (nextImage !== image) {
           turnChanged = true;
         }
@@ -678,7 +723,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
       top: resultsViewportRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [selectedConversation?.updatedAt, selectedConversation?.turns.length, selectedConversation]);
+  }, [selectedConversation?.id, selectedConversation?.turns.length]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1132,22 +1177,38 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         const taskMap = new Map(tasks.map((task) => [task.id, task]));
         await updateConversation(conversationId, (current) => {
           const conversation = current ?? snapshot;
+          let conversationChanged = false;
           const turns = conversation.turns.map((turn) => {
             if (turn.id !== activeTurn.id) {
               return turn;
             }
+            let turnChanged = false;
             const images = turn.images.map((image) => {
               const taskId = image.taskId || image.id;
               const task = taskMap.get(taskId);
-              return task ? taskDataToStoredImage({ ...image, taskId }, task) : image;
+              if (!task) {
+                return image;
+              }
+              const nextImage = taskDataToStoredImage({ ...image, taskId }, task);
+              if (nextImage !== image) {
+                turnChanged = true;
+              }
+              return nextImage;
             });
             const derived = deriveTurnStatus({ ...turn, status: "generating", images });
+            if (!turnChanged && derived.status === turn.status && derived.error === turn.error) {
+              return turn;
+            }
+            conversationChanged = true;
             return {
               ...turn,
               ...derived,
               images,
             };
           });
+          if (!conversationChanged) {
+            return conversation;
+          }
           return {
             ...conversation,
             updatedAt: new Date().toISOString(),
@@ -1169,7 +1230,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
                     status: "generating",
                     error: undefined,
                     images: turn.images.map((image) =>
-                      image.status === "loading" ? { ...image, taskId: image.taskId || image.id } : image,
+                      image.status === "loading" ? { ...image, taskId: image.taskId || image.id, error: undefined } : image,
                     ),
                   }
                 : turn,
@@ -1195,6 +1256,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
         );
         await applyTasks(submitted);
 
+        let consecutivePollFailures = 0;
         while (true) {
           const latestConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
           const latestTurn = latestConversation?.turns.find((turn) => turn.id === activeTurn.id);
@@ -1207,23 +1269,34 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
           }
 
           await sleep(2000);
-          const taskList = await fetchImageTasks(loadingTaskIds);
-          if (taskList.items.length > 0) {
-            await applyTasks(taskList.items);
-          }
-          if (taskList.missing_ids.length > 0 && latestTurn) {
-            const missingImages = latestTurn.images.filter(
-              (image) => image.status === "loading" && image.taskId && taskList.missing_ids.includes(image.taskId),
-            );
-            const resubmitted = await Promise.all(
-              missingImages.map((image) =>
-                activeTurn.mode === "edit"
-                  ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size)
-                  : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size),
-              ),
-            );
-            if (resubmitted.length > 0) {
-              await applyTasks(resubmitted);
+          try {
+            const taskList = await fetchImageTasks(loadingTaskIds);
+            consecutivePollFailures = 0;
+            if (taskList.items.length > 0) {
+              await applyTasks(taskList.items);
+            }
+            if (taskList.missing_ids.length > 0 && latestTurn) {
+              const missingImages = latestTurn.images.filter(
+                (image) => image.status === "loading" && image.taskId && taskList.missing_ids.includes(image.taskId),
+              );
+              const resubmitted = await Promise.all(
+                missingImages.map((image) =>
+                  activeTurn.mode === "edit"
+                    ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size)
+                    : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size),
+                ),
+              );
+              if (resubmitted.length > 0) {
+                await applyTasks(resubmitted);
+              }
+            }
+          } catch (error) {
+            if (!isTransientTaskPollError(error)) {
+              throw error;
+            }
+            consecutivePollFailures += 1;
+            if (consecutivePollFailures === 1 || consecutivePollFailures % 3 === 0) {
+              toast.error("状态查询失败，正在重试");
             }
           }
         }

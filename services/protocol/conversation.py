@@ -1000,6 +1000,13 @@ def stream_image_outputs(
         "turn_use_case": last.get("turn_use_case"),
         "async_image_task_id": async_image_task_id,
     })
+    if async_image_task_id:
+        logger.info({
+            "event": "image_stream_async_pending_detected",
+            "conversation_id": conversation_id,
+            "account_id": request.account_id,
+            "async_image_task_id": async_image_task_id,
+        })
     if message and not file_ids and not sediment_ids and (last.get("blocked") or is_text_response):
         should_retry = bool(message) and not last.get("blocked") and is_text_response and request.image_retry_count < 1
         if should_retry:
@@ -1059,6 +1066,12 @@ def stream_image_outputs(
             poll_timeout_secs=ASYNC_IMAGE_POLL_TIMEOUT_SECS,
         )
     if image_urls:
+        logger.info({
+            "event": "image_stream_assets_resolved",
+            "conversation_id": conversation_id,
+            "account_id": request.account_id,
+            "resolved_url_count": len(image_urls),
+        })
         downloaded_images = backend.download_image_bytes(image_urls)
         image_items = [
             {"b64_json": base64.b64encode(image_data).decode("ascii")}
