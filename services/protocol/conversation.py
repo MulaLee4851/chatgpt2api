@@ -1040,8 +1040,11 @@ def stream_image_outputs(
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=error_text)
         return
 
-    image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids, poll=not bool(message and not file_ids and not sediment_ids))
+    poll_requested = not bool(message and not file_ids and not sediment_ids)
+    async_poll_retry_attempted = False
+    image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids, poll=poll_requested)
     if not image_urls and has_async_image_pending and conversation_id and not message:
+        async_poll_retry_attempted = True
         logger.info({
             "event": "image_stream_async_poll_retry",
             "conversation_id": conversation_id,
@@ -1124,6 +1127,30 @@ def stream_image_outputs(
             },
         )
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=text)
+        return
+
+    _log_image_debug_snapshot(
+        request,
+        conversation_id=conversation_id,
+        file_ids=file_ids,
+        sediment_ids=sediment_ids,
+        message="",
+        last=last,
+        raw_events_tail=raw_events_tail,
+        parsed_events_tail=parsed_events_tail,
+        reason="no_image_no_message_terminal",
+        summary="图片请求结束但未拿到图片或说明文本",
+        extra={
+            "raw_file_ids": raw_file_ids,
+            "effective_file_ids": file_ids,
+            "async_image_task_id": async_image_task_id,
+            "has_async_image_pending": has_async_image_pending,
+            "resolved_url_count": len(image_urls),
+            "poll_requested": poll_requested,
+            "async_poll_retry_attempted": async_poll_retry_attempted,
+            "terminal_kind": "no_image_no_message",
+        },
+    )
 
 
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
@@ -1162,6 +1189,15 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                     returned_result = returned_result or output.kind == "result"
                     yield output
                 if returned_message or not returned_result:
+                    if not returned_message and not returned_result:
+                        logger.warning({
+                            "event": "pool_image_no_result_no_message",
+                            "account_id": request.account_id,
+                            "model": request.model,
+                            "index": index,
+                            "total": request.n,
+                            "image_retry_count": request.image_retry_count,
+                        })
                     account_service.mark_image_result(token, False)
                     return
                 account_service.mark_image_result(token, True)

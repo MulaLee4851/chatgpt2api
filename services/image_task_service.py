@@ -244,7 +244,23 @@ class ImageTaskService:
                 raise RuntimeError("image task returned streaming result unexpectedly")
             data = result.get("data")
             if not isinstance(data, list) or not data:
-                message = _clean(result.get("message")) or "image task returned no image data"
+                message = _clean(result.get("message"))
+                if not message:
+                    log_service.add(
+                        "image_upstream_debug",
+                        "图片任务未拿到图片或说明文本",
+                        {
+                            "reason": "task_result_no_data_no_message",
+                            "task_key": key,
+                            "mode": mode,
+                            "model": model,
+                            "request_preview": request_text(payload.get("prompt")),
+                            "result_keys": sorted(result.keys()),
+                            "has_data": isinstance(data, list) and bool(data),
+                            "has_message": False,
+                        },
+                    )
+                    message = "image task returned no image data"
                 raise RuntimeError(message)
             _consume_identity_images(identity, len(data))
             self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="")
