@@ -196,6 +196,11 @@ def _truncate_text(value: object, limit: int = 1000) -> str:
 DEBUG_EVENT_TAIL_LIMIT = 12
 DEBUG_TEXT_LIMIT = 1200
 ASYNC_IMAGE_POLL_TIMEOUT_SECS = max(300, int(config.image_poll_timeout_secs or 120))
+SKIPPED_IMAGE_FILE_IDS = {"file_upload"}
+
+
+def _filter_effective_image_file_ids(file_ids: list[str]) -> list[str]:
+    return [file_id for file_id in file_ids if file_id and file_id not in SKIPPED_IMAGE_FILE_IDS]
 
 
 def _clip_debug_value(value: Any, depth: int = 0) -> Any:
@@ -977,7 +982,8 @@ def stream_image_outputs(
             )
 
     conversation_id = str(last.get("conversation_id") or "")
-    file_ids = [str(item) for item in last.get("file_ids") or []]
+    raw_file_ids = [str(item) for item in last.get("file_ids") or []]
+    file_ids = _filter_effective_image_file_ids(raw_file_ids)
     sediment_ids = [str(item) for item in last.get("sediment_ids") or []]
     message = str(last.get("text") or "").strip()
     async_image_task_id = _extract_async_image_task_id(raw_events_tail)
@@ -987,6 +993,7 @@ def stream_image_outputs(
         "event": "image_stream_resolve_start",
         "conversation_id": conversation_id,
         "account_id": request.account_id,
+        "raw_file_ids": raw_file_ids,
         "file_ids": file_ids,
         "sediment_ids": sediment_ids,
         "tool_invoked": last.get("tool_invoked"),
@@ -1001,6 +1008,8 @@ def stream_image_outputs(
                 "conversation_id": conversation_id,
                 "retry_count": request.image_retry_count + 1,
                 "turn_use_case": last.get("turn_use_case"),
+                "raw_file_ids": raw_file_ids,
+                "effective_file_ids": file_ids,
             })
             yield from stream_image_outputs(
                 backend,
@@ -1022,12 +1031,17 @@ def stream_image_outputs(
             raw_events_tail=raw_events_tail,
             parsed_events_tail=parsed_events_tail,
             reason="text_fallback",
+            extra={
+                "raw_file_ids": raw_file_ids,
+                "effective_file_ids": file_ids,
+                "poll_skipped_due_to_text_fallback": True,
+            },
         )
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=error_text)
         return
 
-    image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids)
-    if not image_urls and has_async_image_pending and conversation_id:
+    image_urls = backend.resolve_conversation_image_urls(conversation_id, file_ids, sediment_ids, poll=not bool(message and not file_ids and not sediment_ids))
+    if not image_urls and has_async_image_pending and conversation_id and not message:
         logger.info({
             "event": "image_stream_async_poll_retry",
             "conversation_id": conversation_id,
@@ -1063,6 +1077,8 @@ def stream_image_outputs(
                 summary="图片疑似原图回退/未编辑产物",
                 extra={
                     "diagnosis": "疑似原图回退/未编辑产物",
+                    "raw_file_ids": raw_file_ids,
+                    "effective_file_ids": file_ids,
                     "input_image_count": request.input_image_count,
                     "output_image_count": len(downloaded_images),
                     "input_image_hashes": request.input_image_hashes,
@@ -1102,6 +1118,10 @@ def stream_image_outputs(
             raw_events_tail=raw_events_tail,
             parsed_events_tail=parsed_events_tail,
             reason="message_without_assets",
+            extra={
+                "raw_file_ids": raw_file_ids,
+                "effective_file_ids": file_ids,
+            },
         )
         yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=text)
 
