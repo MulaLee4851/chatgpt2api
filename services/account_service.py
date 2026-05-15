@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Condition, Lock
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from services.config import config
 from services.log_service import (
@@ -37,10 +37,33 @@ class AccountService:
         self.storage.save_accounts(list(self._accounts.values()))
 
     @staticmethod
-    def _is_image_account_available(account: dict) -> bool:
+    def _parse_restore_at(value: object) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+            try:
+                return datetime.strptime(text[:26], fmt)
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            return None
+
+    @classmethod
+    def _is_restore_window_active(cls, account: dict) -> bool:
+        restore_at = cls._parse_restore_at(account.get("restore_at"))
+        return bool(restore_at and restore_at > datetime.now())
+
+    @classmethod
+    def _is_image_account_available(cls, account: dict) -> bool:
         if not isinstance(account, dict):
             return False
-        if account.get("status") in {"禁用", "限流", "异常"}:
+        status = str(account.get("status") or "")
+        if status in {"禁用", "异常"}:
+            return False
+        if status == "限流" and cls._is_restore_window_active(account):
             return False
         if bool(account.get("image_quota_unknown")):
             return True
@@ -115,8 +138,8 @@ class AccountService:
                 self._image_inflight[access_token] = current_inflight - 1
             self._image_slot_condition.notify_all()
 
-    def get_available_access_token(self) -> str:
-        attempted_tokens: set[str] = set()
+    def get_available_access_token(self, excluded_tokens: set[str] | None = None) -> str:
+        attempted_tokens: set[str] = set(excluded_tokens or set())
         while True:
             access_token = self._acquire_next_candidate_token(excluded_tokens=attempted_tokens)
             attempted_tokens.add(access_token)
@@ -255,7 +278,7 @@ class AccountService:
             account = self._normalize_account({**current, **updates, "access_token": access_token})
             if account is None:
                 return None
-            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
+            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts and not account.get("restore_at"):
                 self._accounts.pop(access_token, None)
                 self._save_accounts()
                 log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(access_token)})
@@ -266,6 +289,23 @@ class AccountService:
                             {"token": anonymize_token(access_token), "status": account.get("status")})
             return dict(account)
         return None
+
+    def cool_down_image_account(self, access_token: str, *, minutes: int = 30, reason: str = "image_rate_limited") -> dict | None:
+        if not access_token:
+            return None
+        restore_at = (datetime.now() + timedelta(minutes=max(1, int(minutes or 30)))).strftime("%Y-%m-%d %H:%M:%S")
+        account = self.update_account(access_token, {"status": "限流", "restore_at": restore_at})
+        if account is not None:
+            log_service.add(
+                LOG_TYPE_ACCOUNT,
+                "图片账号冷却",
+                {
+                    "token": anonymize_token(access_token),
+                    "reason": reason,
+                    "restore_at": restore_at,
+                },
+            )
+        return account
 
     def mark_image_result(self, access_token: str, success: bool) -> dict | None:
         if not access_token:
@@ -292,7 +332,7 @@ class AccountService:
             account = self._normalize_account(next_item)
             if account is None:
                 return None
-            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
+            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts and not account.get("restore_at"):
                 self._accounts.pop(access_token, None)
                 self._save_accounts()
                 log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(access_token)})

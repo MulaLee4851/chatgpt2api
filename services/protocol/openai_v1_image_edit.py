@@ -36,6 +36,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         message_as_error=False,
         input_image_hashes=input_image_hashes,
         input_image_count=len(input_image_hashes),
+        progress_callback=body.get("_task_progress_callback") if callable(body.get("_task_progress_callback")) else None,
     ))
     if body.get("stream"):
         return stream_image_chunks(outputs)

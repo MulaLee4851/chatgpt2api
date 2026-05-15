@@ -89,6 +89,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         item["data"] = task.get("data")
     if task.get("error"):
         item["error"] = task.get("error")
+    if task.get("progress_message"):
+        item["progress_message"] = task.get("progress_message")
     return item
 
 
@@ -219,6 +221,7 @@ class ImageTaskService:
                 "size": _clean(payload.get("size")),
                 "created_at": now,
                 "updated_at": now,
+                "progress_message": "",
             }
             self._tasks[key] = task
             self._save_locked()
@@ -257,7 +260,7 @@ class ImageTaskService:
     ) -> None:
         started = time.time()
         request_preview = request_text(payload.get("prompt"))
-        self._update_task(key, status=TASK_STATUS_RUNNING, error="")
+        self._update_task(key, status=TASK_STATUS_RUNNING, error="", progress_message="")
         _log_image_task_stage(
             "图片任务开始处理",
             {
@@ -270,6 +273,23 @@ class ImageTaskService:
         )
         try:
             handler = self.edit_handler if mode == "edit" else self.generation_handler
+
+            def update_progress(message: str) -> None:
+                text = _clean(message)
+                self._update_task(key, status=TASK_STATUS_RUNNING, error="", progress_message=text)
+                if text:
+                    _log_image_task_stage(
+                        "图片任务准备重试",
+                        {
+                            "reason": "task_retrying",
+                            "task_key": key,
+                            "mode": mode,
+                            "model": model,
+                            "request_preview": request_preview,
+                            "progress_message": text,
+                        },
+                    )
+
             _log_image_task_stage(
                 "图片任务开始请求上游",
                 {
@@ -280,7 +300,7 @@ class ImageTaskService:
                     "request_preview": request_preview,
                 },
             )
-            result = handler(payload)
+            result = handler({**payload, "_task_progress_callback": update_progress})
             if not isinstance(result, dict):
                 raise RuntimeError("image task returned streaming result unexpectedly")
             data = result.get("data")
@@ -303,7 +323,7 @@ class ImageTaskService:
                     message = "image task returned no image data"
                 raise RuntimeError(message)
             _consume_identity_images(identity, len(data))
-            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="")
+            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="", progress_message="")
             _log_image_task_stage(
                 "图片任务处理成功",
                 {
@@ -328,7 +348,7 @@ class ImageTaskService:
             )
         except Exception as exc:
             error_message = str(exc) or "image task failed"
-            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[])
+            self._update_task(key, status=TASK_STATUS_ERROR, error=error_message, data=[], progress_message="")
             _log_image_task_stage(
                 "图片任务处理失败",
                 {
@@ -435,6 +455,9 @@ class ImageTaskService:
             error = _clean(item.get("error"))
             if error:
                 task["error"] = error
+            progress_message = _clean(item.get("progress_message"))
+            if progress_message:
+                task["progress_message"] = progress_message
             tasks[_task_key(owner, task_id)] = task
         return tasks
 

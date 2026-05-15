@@ -7,14 +7,14 @@ import re
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 import tiktoken
 
 from services.account_service import account_service
 from services.config import config
 from services.log_service import log_service
-from services.openai_backend_api import OpenAIBackendAPI
+from services.openai_backend_api import OpenAIBackendAPI, RetryableImageGenerationError
 from utils.helper import GPT_WEB_MODEL, IMAGE_MODELS, extract_image_from_message_content
 from utils.log import logger
 
@@ -61,6 +61,16 @@ def image_stream_error_message(message: str) -> str:
     if "curl: (35)" in lower or "tls connect error" in lower or "openssl_internal" in lower:
         return "upstream image connection failed, please retry later"
     return text or "image generation failed"
+
+
+def emit_image_progress(request: ConversationRequest, message: str) -> None:
+    callback = request.progress_callback
+    if callback is None:
+        return
+    try:
+        callback(str(message or "").strip())
+    except Exception:
+        pass
 
 
 def encode_images(images: Iterable[tuple[bytes, str, str]]) -> list[str]:
@@ -384,6 +394,7 @@ class ConversationRequest:
     account_id: str = ""
     input_image_hashes: list[str] = field(default_factory=list)
     input_image_count: int = 0
+    progress_callback: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -1201,10 +1212,13 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
 
     emitted = False
     last_error = ""
+    max_rotation_retries = 1
     for index in range(1, request.n + 1):
+        excluded_tokens: set[str] = set()
+        rotation_retry_count = 0
         while True:
             try:
-                token = account_service.get_available_access_token()
+                token = account_service.get_available_access_token(excluded_tokens=excluded_tokens)
             except RuntimeError as exc:
                 if emitted:
                     return
@@ -1242,9 +1256,32 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                         })
                     account_service.mark_image_result(token, False)
                     return
+                emit_image_progress(request, "")
                 account_service.mark_image_result(token, True)
                 break
+            except RetryableImageGenerationError as exc:
+                account_service.mark_image_result(token, False)
+                last_error = str(exc)
+                excluded_tokens.add(token)
+                if exc.reason == "rate_limit":
+                    account_service.cool_down_image_account(token, minutes=30, reason="image_generation_429")
+                logger.warning({
+                    "event": "image_stream_retryable_failure",
+                    "request_token": token,
+                    "account_id": request.account_id,
+                    "error": last_error,
+                    "reason": exc.reason,
+                    "retry_index": rotation_retry_count + 1,
+                    "max_rotation_retries": max_rotation_retries,
+                })
+                if rotation_retry_count >= max_rotation_retries:
+                    emit_image_progress(request, "")
+                    raise ImageGenerationError(image_stream_error_message(last_error)) from exc
+                rotation_retry_count += 1
+                emit_image_progress(request, "遇到问题，正在尝试重新生图")
+                continue
             except ImageGenerationError:
+                emit_image_progress(request, "")
                 account_service.mark_image_result(token, False)
                 raise
             except Exception as exc:
@@ -1254,6 +1291,7 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 if not emitted_for_token and is_token_invalid_error(last_error):
                     account_service.remove_invalid_token(token, "image_stream")
                     continue
+                emit_image_progress(request, "")
                 raise ImageGenerationError(image_stream_error_message(last_error)) from exc
 
     if not emitted:

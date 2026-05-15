@@ -186,8 +186,8 @@ export type ImageTask = {
   updated_at: string;
   data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
   error?: string;
+  progress_message?: string;
 };
-
 export type GptWebChatMessage = {
   role: GptWebMessageRole;
   content: string;

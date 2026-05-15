@@ -25,6 +25,12 @@ class InvalidAccessTokenError(RuntimeError):
     pass
 
 
+class RetryableImageGenerationError(RuntimeError):
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 @dataclass
 class ChatRequirements:
     """保存一次对话请求所需的 sentinel token。"""
@@ -610,6 +616,11 @@ class OpenAIBackendAPI:
         path = f"/backend-api/conversation/{conversation_id}"
         response = self.session.get(self.base_url + path, headers=self._headers(path, {"Accept": "application/json"}),
                                     timeout=60)
+        if response.status_code == 429:
+            raise RetryableImageGenerationError(
+                f"{path} failed: status=429, body={response.text}",
+                reason="rate_limit",
+            )
         ensure_ok(response, path)
         return response.json()
 
@@ -675,6 +686,11 @@ class OpenAIBackendAPI:
                           "elapsed_secs": round(time.time() - start, 1)})
             time.sleep(4)
         logger.info({"event": "image_poll_timeout", "conversation_id": conversation_id, "timeout_secs": timeout_secs})
+        if timeout_secs >= 180:
+            raise RetryableImageGenerationError(
+                f"image generation polling timed out after {int(timeout_secs)}s",
+                reason="timeout",
+            )
         return [], []
 
     def _get_file_download_url(self, file_id: str) -> str:

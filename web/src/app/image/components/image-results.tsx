@@ -319,6 +319,11 @@ export function ImageResults({
                               )}
                             </div>
                             <p className="text-[10px] leading-4 sm:text-sm">{turn.status === "queued" ? "排队中" : "处理中"}</p>
+                            {image.progressMessage ? (
+                              <p className="max-w-[220px] text-[10px] leading-4 text-amber-600 sm:max-w-xs sm:text-xs sm:leading-5">
+                                {image.progressMessage}
+                              </p>
+                            ) : null}
                           </div>
                         </div>
                       );

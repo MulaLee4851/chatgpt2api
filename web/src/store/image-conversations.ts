@@ -22,8 +22,8 @@ export type StoredImage = {
   url?: string;
   revised_prompt?: string;
   error?: string;
+  progressMessage?: string;
 };
-
 export type ImageTurnStatus = "queued" | "generating" | "success" | "error";
 
 export type ImageTurn = {
@@ -70,6 +70,7 @@ function normalizeStoredImage(image: StoredImage): StoredImage {
     taskId: typeof image.taskId === "string" && image.taskId ? image.taskId : undefined,
     url: typeof image.url === "string" && image.url ? image.url : undefined,
     revised_prompt: typeof image.revised_prompt === "string" ? image.revised_prompt : undefined,
+    progressMessage: typeof image.progressMessage === "string" && image.progressMessage ? image.progressMessage : undefined,
   };
   if (image.status === "loading" || image.status === "error" || image.status === "success") {
     return normalized;

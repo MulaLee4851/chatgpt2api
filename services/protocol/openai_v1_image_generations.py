@@ -25,6 +25,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         response_format=response_format,
         base_url=base_url,
         message_as_error=True,
+        progress_callback=body.get("_task_progress_callback") if callable(body.get("_task_progress_callback")) else None,
     ))
     if body.get("stream"):
         return stream_image_chunks(outputs)

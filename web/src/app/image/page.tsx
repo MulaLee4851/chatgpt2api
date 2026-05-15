@@ -309,6 +309,7 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       url: first.url,
       revised_prompt: first.revised_prompt,
       error: undefined,
+      progressMessage: undefined,
     };
   }
 
@@ -322,10 +323,12 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       taskId: task.id,
       status: "error",
       error,
+      progressMessage: undefined,
     };
   }
 
-  if (image.status === "loading" && image.taskId === task.id && !image.error) {
+  const progressMessage = task.progress_message?.trim() || undefined;
+  if (image.status === "loading" && image.taskId === task.id && !image.error && image.progressMessage === progressMessage) {
     return image;
   }
 
@@ -334,6 +337,7 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
     taskId: task.id,
     status: "loading",
     error: undefined,
+    progressMessage,
   };
 }
 
