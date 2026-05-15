@@ -1071,6 +1071,12 @@ def stream_image_outputs(
                     "matched_count": len(matched_hashes),
                 },
             )
+            if message and (last.get("blocked") or is_text_response):
+                error_text = message
+                if is_text_response and not last.get("blocked"):
+                    error_text = f"上游未生成图片，而是返回补充说明：{message}"
+                yield ImageOutput(kind="message", model=request.model, index=index, total=total, text=error_text)
+                return
         data = format_image_result(
             image_items,
             request.prompt,

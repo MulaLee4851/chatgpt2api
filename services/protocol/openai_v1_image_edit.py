@@ -33,7 +33,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         response_format=response_format,
         base_url=base_url,
         images=encoded_images,
-        message_as_error=True,
+        message_as_error=False,
         input_image_hashes=input_image_hashes,
         input_image_count=len(input_image_hashes),
     ))
