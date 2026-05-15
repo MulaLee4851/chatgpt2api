@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Iterator
 
 from services.protocol.conversation import (
@@ -23,6 +24,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     encoded_images = encode_images(images)
     if not encoded_images:
         raise ImageGenerationError("image is required")
+    input_image_hashes = [hashlib.sha256(data).hexdigest() for data, _, _ in images if data]
     outputs = stream_image_outputs_with_pool(ConversationRequest(
         prompt=prompt,
         model=model,
@@ -32,6 +34,8 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         base_url=base_url,
         images=encoded_images,
         message_as_error=True,
+        input_image_hashes=input_image_hashes,
+        input_image_count=len(input_image_hashes),
     ))
     if body.get("stream"):
         return stream_image_chunks(outputs)

@@ -261,27 +261,28 @@ def _log_image_debug_snapshot(
     raw_events_tail: list[dict[str, Any]],
     parsed_events_tail: list[dict[str, Any]],
     reason: str,
+    summary: str = "图片请求回退为文本",
+    extra: dict[str, Any] | None = None,
 ) -> None:
-    log_service.add(
-        "image_upstream_debug",
-        "图片请求回退为文本",
-        {
-            "reason": reason,
-            "conversation_id": conversation_id,
-            "account_id": request.account_id,
-            "model": request.model,
-            "prompt_excerpt": _truncate_text(request.prompt, 600),
-            "tool_invoked": last.get("tool_invoked"),
-            "turn_use_case": last.get("turn_use_case"),
-            "blocked": bool(last.get("blocked")),
-            "message": _truncate_text(message, DEBUG_TEXT_LIMIT),
-            "file_ids": file_ids,
-            "sediment_ids": sediment_ids,
-            "image_retry_count": request.image_retry_count,
-            "raw_events_tail": raw_events_tail,
-            "parsed_events_tail": parsed_events_tail,
-        },
-    )
+    payload = {
+        "reason": reason,
+        "conversation_id": conversation_id,
+        "account_id": request.account_id,
+        "model": request.model,
+        "prompt_excerpt": _truncate_text(request.prompt, 600),
+        "tool_invoked": last.get("tool_invoked"),
+        "turn_use_case": last.get("turn_use_case"),
+        "blocked": bool(last.get("blocked")),
+        "message": _truncate_text(message, DEBUG_TEXT_LIMIT),
+        "file_ids": file_ids,
+        "sediment_ids": sediment_ids,
+        "image_retry_count": request.image_retry_count,
+        "raw_events_tail": raw_events_tail,
+        "parsed_events_tail": parsed_events_tail,
+    }
+    if extra:
+        payload.update(extra)
+    log_service.add("image_upstream_debug", summary, payload)
 
 
 def encoding_for_model(model: str):
@@ -356,6 +357,8 @@ class ConversationRequest:
     message_as_error: bool = False
     image_retry_count: int = 0
     account_id: str = ""
+    input_image_hashes: list[str] = field(default_factory=list)
+    input_image_count: int = 0
 
 
 @dataclass
@@ -1039,10 +1042,35 @@ def stream_image_outputs(
             poll_timeout_secs=ASYNC_IMAGE_POLL_TIMEOUT_SECS,
         )
     if image_urls:
+        downloaded_images = backend.download_image_bytes(image_urls)
         image_items = [
             {"b64_json": base64.b64encode(image_data).decode("ascii")}
-            for image_data in backend.download_image_bytes(image_urls)
+            for image_data in downloaded_images
         ]
+        output_image_hashes = [hashlib.sha256(image_data).hexdigest() for image_data in downloaded_images]
+        matched_hashes = sorted(set(request.input_image_hashes) & set(output_image_hashes))
+        if matched_hashes:
+            _log_image_debug_snapshot(
+                request,
+                conversation_id=conversation_id,
+                file_ids=file_ids,
+                sediment_ids=sediment_ids,
+                message=message,
+                last=last,
+                raw_events_tail=raw_events_tail,
+                parsed_events_tail=parsed_events_tail,
+                reason="same_hash_suspected_fallback",
+                summary="图片疑似原图回退/未编辑产物",
+                extra={
+                    "diagnosis": "疑似原图回退/未编辑产物",
+                    "input_image_count": request.input_image_count,
+                    "output_image_count": len(downloaded_images),
+                    "input_image_hashes": request.input_image_hashes,
+                    "output_image_hashes": output_image_hashes,
+                    "matched_hashes": matched_hashes,
+                    "matched_count": len(matched_hashes),
+                },
+            )
         data = format_image_result(
             image_items,
             request.prompt,
