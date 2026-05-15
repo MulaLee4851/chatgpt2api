@@ -1,6 +1,7 @@
 "use client";
 
 import { login } from "@/lib/api";
+import { isRequestError } from "@/lib/request";
 import { clearStoredAuthSession, getStoredAuthSession, setStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
 export async function getValidatedAuthSession(): Promise<StoredAuthSession | null> {
@@ -22,8 +23,11 @@ export async function getValidatedAuthSession(): Promise<StoredAuthSession | nul
     };
     await setStoredAuthSession(nextSession);
     return nextSession;
-  } catch {
-    await clearStoredAuthSession();
-    return null;
+  } catch (error) {
+    if (isRequestError(error) && (error.status === 401 || error.status === 403)) {
+      await clearStoredAuthSession();
+      return null;
+    }
+    return storedSession;
   }
 }

@@ -27,6 +27,7 @@ import {
   type ImageTemplate,
 } from "@/lib/api";
 import { getValidatedAuthSession } from "@/lib/auth-session";
+import { isRequestError } from "@/lib/request";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import type { StoredAuthSession } from "@/store/auth";
 import {
@@ -49,6 +50,7 @@ import {
 const ACTIVE_CONVERSATION_STORAGE_KEY = "chatgpt2api:image_active_conversation_id";
 const IMAGE_SIZE_STORAGE_KEY = "chatgpt2api:image_last_size";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
+const SESSION_REFRESH_INTERVAL_MS = 60_000;
 
 function clampImageCount(value: string, maxCount = 100) {
   const normalizedMax = Math.max(1, Math.floor(Number(maxCount) || 1));
@@ -204,9 +206,52 @@ async function buildReferenceImageFromTemplate(url: string, fileName: string) {
   };
 }
 
+function normalizeImageFailureReason(value: string | null | undefined) {
+  let normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.startsWith("上游未生成图片，而是返回补充说明：")) {
+    normalized = normalized.replace(/^上游未生成图片，而是返回补充说明：\s*/, "").trim();
+  }
+  if (normalized === "image task returned no image data") {
+    return "未返回图片结果，请稍后重试";
+  }
+  return normalized;
+}
+
+function formatImageFailureMessage(value: string | null | undefined, fallback = "生成失败") {
+  const reason = normalizeImageFailureReason(value);
+  if (!reason) {
+    return fallback;
+  }
+  return reason.startsWith("生成失败") ? reason : `生成失败：${reason}`;
+}
+
+function formatImageRequestError(error: unknown, fallback = "生成失败") {
+  if (isRequestError(error)) {
+    if (error.status === 401 || error.status === 403) {
+      return "登录状态异常，请重试或重新登录";
+    }
+    if (error.status === 413) {
+      return "图片太大，请压缩后重试";
+    }
+    if (error.code === "ECONNABORTED" || error.message.includes("超时")) {
+      return "请求超时，请稍后重试";
+    }
+    if (error.isNetworkError) {
+      return "网络连接失败，请稍后重试";
+    }
+    return formatImageFailureMessage(error.message, fallback);
+  }
+  if (error instanceof Error) {
+    return formatImageFailureMessage(error.message, fallback);
+  }
+  return fallback;
+}
+
 function getImageErrorMessage(value: string | null | undefined) {
-  const normalized = typeof value === "string" ? value.trim() : "";
-  return normalized || "生成失败";
+  return formatImageFailureMessage(value);
 }
 
 function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage {
@@ -217,7 +262,7 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
         ...image,
         taskId: task.id,
         status: "error",
-        error: "未返回图片数据",
+        error: formatImageFailureMessage("未返回图片结果，请稍后重试"),
       };
     }
     return {
@@ -410,6 +455,8 @@ async function recoverConversationHistory(items: ImageConversation[]) {
 
 function ImagePageContent({ session }: { session: StoredAuthSession }) {
   const didLoadSessionRef = useRef(false);
+  const lastSessionRefreshAtRef = useRef(0);
+  const isRefreshingSessionRef = useRef(false);
   const conversationsRef = useRef<ImageConversation[]>([]);
   const resultsViewportRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -565,13 +612,13 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
     const loadTemplates = async () => {
       setIsLoadingTemplates(true);
       try {
-        const data = await fetchImageTemplates();
+        const data = await fetchImageTemplates({ redirectOnUnauthorized: false });
         if (!cancelled) {
           setTemplates(data.items);
         }
       } catch (error) {
         if (!cancelled) {
-          toast.error(error instanceof Error ? error.message : "加载模板失败");
+          toast.error(formatImageRequestError(error, "加载模板失败"));
         }
       } finally {
         if (!cancelled) {
@@ -586,10 +633,23 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
     };
   }, []);
 
-  const refreshSession = useCallback(async () => {
-    const latest = await getValidatedAuthSession();
-    if (latest) {
-      setAuthSession(latest);
+  const refreshSession = useCallback(async (options: { force?: boolean } = {}) => {
+    const now = Date.now();
+    if (!options.force && now - lastSessionRefreshAtRef.current < SESSION_REFRESH_INTERVAL_MS) {
+      return;
+    }
+    if (isRefreshingSessionRef.current) {
+      return;
+    }
+    isRefreshingSessionRef.current = true;
+    try {
+      const latest = await getValidatedAuthSession();
+      if (latest) {
+        setAuthSession(latest);
+        lastSessionRefreshAtRef.current = Date.now();
+      }
+    } finally {
+      isRefreshingSessionRef.current = false;
     }
   }, []);
 
@@ -603,7 +663,6 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
       void refreshSession();
     };
 
-    void refreshSession();
     window.addEventListener("focus", handleFocus);
     return () => {
       window.removeEventListener("focus", handleFocus);
@@ -1171,7 +1230,7 @@ function ImagePageContent({ session }: { session: StoredAuthSession }) {
 
         await refreshSession();
       } catch (error) {
-        const message = error instanceof Error ? error.message : "生成图片失败";
+        const message = formatImageRequestError(error, "生成失败");
         await updateConversation(conversationId, (current) => {
           const conversation = current ?? snapshot;
           return {

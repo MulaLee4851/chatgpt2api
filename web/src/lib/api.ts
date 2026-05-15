@@ -613,6 +613,7 @@ export async function createImageGenerationTask(clientTaskId: string, prompt: st
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
     },
+    redirectOnUnauthorized: false,
   });
 }
 
@@ -641,6 +642,7 @@ export async function createImageEditTask(
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
     method: "POST",
     body: formData,
+    redirectOnUnauthorized: false,
   });
 }
 
@@ -649,11 +651,15 @@ export async function fetchImageTasks(ids: string[]) {
   if (ids.length > 0) {
     params.set("ids", ids.join(","));
   }
-  return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`);
+  return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`, {
+    redirectOnUnauthorized: false,
+  });
 }
 
-export async function fetchImageTemplates() {
-  const response = await httpRequest<{ items: Array<Partial<ImageTemplate> & Record<string, unknown>> }>("/api/image-templates");
+export async function fetchImageTemplates(options: { redirectOnUnauthorized?: boolean } = {}) {
+  const response = await httpRequest<{ items: Array<Partial<ImageTemplate> & Record<string, unknown>> }>("/api/image-templates", {
+    redirectOnUnauthorized: options.redirectOnUnauthorized,
+  });
   return normalizeImageTemplateListResponse(response);
 }
 
