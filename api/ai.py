@@ -149,6 +149,9 @@ def create_router() -> APIRouter:
             stream: Optional[bool] = Form(default=None),
     ):
         identity = require_identity(authorization)
+        payload, image_sources = await parse_image_edit_request(request)
+        prompt = str(payload["prompt"])
+        model = str(payload["model"])
         call = LoggedCall(identity, "/v1/images/edits", model, "图生图", request_text=prompt)
         if n < 1 or n > 4:
             raise HTTPException(status_code=400, detail={"error": "n must be between 1 and 4"})

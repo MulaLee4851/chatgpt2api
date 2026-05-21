@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from threading import Condition, Lock
 from typing import Any
 from datetime import datetime, timedelta
@@ -12,6 +15,40 @@ from services.log_service import (
 )
 from services.storage.base import StorageBackend
 from utils.helper import anonymize_token
+
+
+EXPORT_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def _clean_string(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _decode_jwt_payload(token: str) -> dict[str, Any]:
+    parts = str(token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    try:
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("utf-8"))
+        data = json.loads(decoded.decode("utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _format_timestamp(value: Any) -> str:
+    try:
+        timestamp = int(value)
+    except (TypeError, ValueError):
+        return ""
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(EXPORT_TIMEZONE).isoformat(timespec="seconds")
+
+
+def _nested_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 class AccountService:
@@ -242,6 +279,48 @@ class AccountService:
                         "type": str(current.get("type") or "free"),
                     }
                 )
+                if account is not None:
+                    self._accounts[access_token] = account
+            self._save_accounts()
+            items = [dict(item) for item in self._accounts.values()]
+            log_service.add(LOG_TYPE_ACCOUNT, f"新增 {added} 个账号，跳过 {skipped} 个",
+                            {"added": added, "skipped": skipped})
+        return {"added": added, "skipped": skipped, "items": items}
+
+    def add_account_items(self, items: list[dict[str, Any]]) -> dict:
+        payloads: list[dict[str, Any]] = []
+        seen_tokens: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            access_token = _clean_string(item.get("access_token") or item.get("accessToken"))
+            if not access_token or access_token in seen_tokens:
+                continue
+
+            payload = dict(item)
+            payload["access_token"] = access_token
+            payload.pop("accessToken", None)
+            if _clean_string(payload.get("type")).lower() == "codex":
+                payload.setdefault("export_type", "codex")
+                payload.pop("type", None)
+            payloads.append(payload)
+            seen_tokens.add(access_token)
+
+        if not payloads:
+            return {"added": 0, "skipped": 0, "items": self.list_accounts()}
+
+        with self._lock:
+            added = 0
+            skipped = 0
+            for payload in payloads:
+                access_token = payload["access_token"]
+                current = self._accounts.get(access_token)
+                if current is None:
+                    added += 1
+                    current = {}
+                else:
+                    skipped += 1
+                account = self._normalize_account({**current, **payload})
                 if account is not None:
                     self._accounts[access_token] = account
             self._save_accounts()

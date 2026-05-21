@@ -14,10 +14,12 @@ import {
   resetRegister as resetRegisterApi,
   fetchSettingsConfig,
   runBackupNow,
+  syncImageStorage,
   startRegister,
   startCPAImport,
   stopRegister,
   testBackupConnection,
+  testImageStorageConnection,
   updateCPAPool,
   updateRegisterConfig,
   updateSettingsConfig,
@@ -26,6 +28,8 @@ import {
   type BackupState,
   type CPAPool,
   type CPARemoteFile,
+  type ImageStorageMode,
+  type ImageStorageSettings,
   type RegisterConfig,
   type SettingsConfig,
 } from "@/lib/api";
@@ -35,6 +39,22 @@ export const PAGE_SIZE_OPTIONS = ["50", "100", "200"] as const;
 export type PageSizeOption = (typeof PAGE_SIZE_OPTIONS)[number];
 
 function normalizeConfig(config: SettingsConfig): SettingsConfig {
+  const imageStorage = typeof config.image_storage === "object" && config.image_storage
+    ? config.image_storage as ImageStorageSettings
+    : {
+      enabled: false,
+      mode: "local",
+      webdav_url: "",
+      webdav_username: "",
+      webdav_password: "",
+      webdav_root_path: "chatgpt2api/images",
+      public_base_url: "",
+    };
+  const imageStorageMode: ImageStorageMode = imageStorage.enabled && imageStorage.mode === "both"
+    ? "both"
+    : imageStorage.enabled && imageStorage.mode === "webdav"
+      ? "webdav"
+      : "local";
   const backup = typeof config.backup === "object" && config.backup
     ? config.backup as BackupSettings
     : {
@@ -140,6 +160,8 @@ type SettingsStore = {
   isRunningBackup: boolean;
   deletingBackupKey: string | null;
   isTestingBackup: boolean;
+  isTestingImageStorage: boolean;
+  isSyncingImageStorage: boolean;
 
   registerConfig: RegisterConfig | null;
   isLoadingRegister: boolean;
@@ -189,6 +211,9 @@ type SettingsStore = {
   setGlobalSystemPrompt: (value: string) => void;
   setSensitiveWordsText: (value: string) => void;
   setAIReviewField: (key: "enabled" | "base_url" | "api_key" | "model" | "prompt", value: string | boolean) => void;
+  setImageStorageField: (key: keyof ImageStorageSettings, value: string | boolean) => void;
+  testImageStorage: () => Promise<void>;
+  syncImagesToWebDAV: () => Promise<void>;
   setBackupField: (key: keyof BackupSettings, value: string | boolean) => void;
   setBackupInclude: (key: keyof BackupSettings["include"], value: boolean) => void;
 
@@ -240,6 +265,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   isRunningBackup: false,
   deletingBackupKey: null,
   isTestingBackup: false,
+  isTestingImageStorage: false,
+  isSyncingImageStorage: false,
 
   registerConfig: null,
   isLoadingRegister: true,
@@ -475,6 +502,66 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     set((state) => state.config ? { config: { ...state.config, ai_review: { ...(state.config.ai_review || {}), [key]: value } } } : {});
   },
 
+  setImageStorageField: (key, value) => {
+    set((state) => {
+      if (!state.config?.image_storage) {
+        return {};
+      }
+      const next = {
+        ...state.config.image_storage,
+        [key]: value,
+      };
+      if (key === "enabled" && !value) {
+        next.mode = "local";
+      }
+      if (key === "enabled" && value && next.mode === "local") {
+        next.mode = "webdav";
+      }
+      return {
+        config: {
+          ...state.config,
+          image_storage: next,
+        },
+      };
+    });
+  },
+
+  testImageStorage: async () => {
+    set({ isTestingImageStorage: true });
+    try {
+      const saved = await get().saveConfig();
+      if (!saved) {
+        return;
+      }
+      const data = await testImageStorageConnection();
+      if (data.result.ok) {
+        toast.success(`WebDAV 连接可用：HTTP ${data.result.status}`);
+      } else {
+        toast.error(`WebDAV 连接失败：${data.result.error ?? `HTTP ${data.result.status}`}`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "测试 WebDAV 失败");
+    } finally {
+      set({ isTestingImageStorage: false });
+    }
+  },
+
+  syncImagesToWebDAV: async () => {
+    set({ isSyncingImageStorage: true });
+    try {
+      const saved = await get().saveConfig();
+      if (!saved) {
+        return;
+      }
+      const data = await syncImageStorage();
+      toast.success(`同步完成：上传 ${data.result.uploaded}，跳过 ${data.result.skipped}，失败 ${data.result.failed}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "同步图片失败");
+    } finally {
+      set({ isSyncingImageStorage: false });
+    }
+  },
+
   setBackupField: (key, value) => {
     set((state) => {
       if (!state.config?.backup) {
@@ -640,7 +727,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
           ...state.registerConfig.mail,
           providers: [
             ...(state.registerConfig.mail.providers || []),
-            { enable: true, type: "tempmail_lol", api_key: "", domain: [] },
+            { enable: true, type: "cloudmail_gen", api_base: "", admin_email: "", admin_password: "", domain: [], subdomain: [], email_prefix: "" },
           ],
         },
       },
