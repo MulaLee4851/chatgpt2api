@@ -78,15 +78,7 @@ def create_router() -> APIRouter:
         identity = require_identity(authorization)
         ensure_identity_can_use_image(identity, 1)
         await filter_or_log(LoggedCall(identity, "/api/image-tasks/edits", model, "图生图任务", request_text=prompt), prompt)
-        uploads = [*(image or []), *(image_list or [])]
-        if not uploads:
-            raise HTTPException(status_code=400, detail={"error": "image file is required"})
-        images: list[tuple[bytes, str, str]] = []
-        for upload in uploads:
-            image_data = await upload.read()
-            if not image_data:
-                raise HTTPException(status_code=400, detail={"error": "image file is empty"})
-            images.append((image_data, upload.filename or "image.png", upload.content_type or "image/png"))
+        images = await read_image_sources(image_sources)
         try:
             return await run_in_threadpool(
                 image_task_service.submit_edit,
@@ -94,7 +86,7 @@ def create_router() -> APIRouter:
                 client_task_id=client_task_id,
                 prompt=prompt,
                 model=model,
-                size=size,
+                size=payload["size"],
                 base_url=resolve_image_base_url(request),
                 images=images,
             )

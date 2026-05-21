@@ -62,6 +62,7 @@ class UserKeyUpdateRequest(BaseModel):
 
 class AccountCreateRequest(BaseModel):
     tokens: list[str] = Field(default_factory=list)
+    accounts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AccountDeleteRequest(BaseModel):
@@ -70,6 +71,11 @@ class AccountDeleteRequest(BaseModel):
 
 class AccountRefreshRequest(BaseModel):
     access_tokens: list[str] = Field(default_factory=list)
+
+
+class AccountExportRequest(BaseModel):
+    access_tokens: list[str] = Field(default_factory=list)
+    format: Literal["json", "zip"] = "json"
 
 
 class AccountUpdateRequest(BaseModel):
@@ -212,10 +218,21 @@ def create_router() -> APIRouter:
     @router.post("/api/accounts")
     async def create_accounts(body: AccountCreateRequest, authorization: Optional[str] = Header(default=None)):
         require_admin(authorization)
-        tokens = [str(token or "").strip() for token in body.tokens if str(token or "").strip()]
+        account_payloads = [item for item in body.accounts if isinstance(item, dict)]
+        payload_tokens = [_account_payload_token(item) for item in account_payloads]
+        tokens = _unique_tokens([*body.tokens, *payload_tokens])
         if not tokens:
             raise HTTPException(status_code=400, detail={"error": "tokens is required"})
-        result = account_service.add_accounts(tokens)
+        if account_payloads:
+            result = account_service.add_account_items(account_payloads)
+            payload_token_set = set(_unique_tokens(payload_tokens))
+            extra_tokens = [token for token in tokens if token not in payload_token_set]
+            if extra_tokens:
+                extra_result = account_service.add_accounts(extra_tokens)
+                result["added"] = int(result.get("added") or 0) + int(extra_result.get("added") or 0)
+                result["skipped"] = int(result.get("skipped") or 0) + int(extra_result.get("skipped") or 0)
+        else:
+            result = account_service.add_accounts(tokens)
         refresh_result = account_service.refresh_accounts(tokens)
         return {
             **result,
@@ -241,6 +258,33 @@ def create_router() -> APIRouter:
         if not account_service.list_tokens():
             raise HTTPException(status_code=400, detail={"error": "access_tokens is required"})
         return account_service.refresh_all_accounts()
+
+    @router.post("/api/accounts/export")
+    async def export_accounts(body: AccountExportRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        access_tokens = _unique_tokens(body.access_tokens)
+        items = account_service.build_export_items(access_tokens)
+        if not items:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "没有可导出的完整账号，需要同时有 access_token、refresh_token 和 id_token"},
+            )
+
+        timestamp = _download_timestamp()
+        if body.format == "zip":
+            content = _account_zip_bytes(items)
+            return Response(
+                content,
+                media_type="application/zip",
+                headers={"Content-Disposition": f'attachment; filename="codex-accounts-{timestamp}.zip"'},
+            )
+
+        payload: dict[str, str] | list[dict[str, str]] = items[0] if len(items) == 1 else items
+        return Response(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="codex-accounts-{timestamp}.json"'},
+        )
 
     @router.post("/api/accounts/update")
     async def update_account(body: AccountUpdateRequest, authorization: Optional[str] = Header(default=None)):

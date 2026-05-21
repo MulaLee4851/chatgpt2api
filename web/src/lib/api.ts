@@ -9,10 +9,16 @@ export type AuthRole = "admin" | "user";
 export type Account = {
   access_token: string;
   type: AccountType;
+  export_type?: string | null;
   status: AccountStatus;
   quota: number;
   image_quota_unknown?: boolean;
   email?: string | null;
+  expired?: string | null;
+  id_token?: string | null;
+  account_id?: string | null;
+  last_refresh?: string | null;
+  refresh_token?: string | null;
   user_id?: string | null;
   limits_progress?: Array<{
     feature_name?: string;
@@ -80,7 +86,20 @@ export type SettingsConfig = {
   log_levels?: string[];
   backup?: BackupSettings;
   backup_state?: BackupState;
+  image_storage?: ImageStorageSettings;
   [key: string]: unknown;
+};
+
+export type ImageStorageMode = "local" | "webdav" | "both";
+
+export type ImageStorageSettings = {
+  enabled: boolean;
+  mode: ImageStorageMode;
+  webdav_url: string;
+  webdav_username: string;
+  webdav_password: string;
+  webdav_root_path: string;
+  public_base_url: string;
 };
 
 export type BackupInclude = {
@@ -157,6 +176,9 @@ export type ManagedImage = {
   url: string;
   thumbnail_url?: string;
   created_at: string;
+  storage?: "local" | "webdav" | "both" | string;
+  local?: boolean;
+  webdav?: boolean;
   width?: number;
   height?: number;
   tags?: string[];
@@ -528,7 +550,10 @@ export async function fetchAccountSummary() {
 export async function createAccounts(tokens: string[]) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "POST",
-    body: { tokens },
+    body: {
+      tokens,
+      ...(accounts.length > 0 ? { accounts } : {}),
+    },
   });
 }
 
@@ -544,6 +569,32 @@ export async function refreshAccounts(accessTokens: string[] = []) {
     method: "POST",
     body: { access_tokens: accessTokens },
   });
+}
+
+function getFilenameFromDisposition(value: unknown, fallback: string) {
+  const disposition = typeof value === "string" ? value : "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+  }
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return match?.[1] || fallback;
+}
+
+export async function exportAccounts(format: AccountExportFormat, accessTokens: string[] = []) {
+  const response = await request.request<Blob>({
+    url: "/api/accounts/export",
+    method: "POST",
+    data: {
+      format,
+      access_tokens: accessTokens,
+    },
+    responseType: "blob",
+  });
+  return {
+    blob: response.data,
+    filename: getFilenameFromDisposition(response.headers["content-disposition"], `codex-accounts.${format}`),
+  };
 }
 
 export async function updateAccount(
@@ -744,6 +795,20 @@ export async function updateSettingsConfig(settings: SettingsConfig) {
 
 export async function testBackupConnection() {
   return httpRequest<{ result: { ok: boolean; status: number } }>("/api/backup/test", {
+    method: "POST",
+    body: {},
+  });
+}
+
+export async function testImageStorageConnection() {
+  return httpRequest<{ result: { ok: boolean; status: number; error?: string | null } }>("/api/image-storage/test", {
+    method: "POST",
+    body: {},
+  });
+}
+
+export async function syncImageStorage() {
+  return httpRequest<{ result: { uploaded: number; skipped: number; failed: number } }>("/api/image-storage/sync", {
     method: "POST",
     body: {},
   });
