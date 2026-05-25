@@ -127,6 +127,26 @@ function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string) {
   return new File([bytes], fileName, { type: mimeType || matchedMimeType || "image/png" });
 }
 
+function normalizeImageAssetUrl(url: string) {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.startsWith("data:")) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed, typeof window !== "undefined" ? window.location.origin : "https://leeschathome.eu.cc");
+    if (["/images/", "/template-images/"].some((prefix) => parsed.pathname.startsWith(prefix))) {
+      const origin = typeof window !== "undefined" ? window.location.origin : parsed.origin;
+      return `${origin}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
   if (!image.b64_json) {
     return null;
@@ -145,6 +165,9 @@ async function fetchImageAsFile(url: string, fileName: string) {
     throw new Error("读取结果图失败");
   }
   const blob = await response.blob();
+  if (!blob.size) {
+    throw new Error("读取结果图失败：图片内容为空");
+  }
   return new File([blob], fileName, { type: blob.type || "image/png" });
 }
 
@@ -160,12 +183,13 @@ async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: 
   if (!image.url) {
     return null;
   }
-  const file = await fetchImageAsFile(image.url, fileName);
+  const file = await fetchImageAsFile(normalizeImageAssetUrl(image.url), fileName);
+  const dataUrl = await readFileAsDataUrl(file);
   return {
     referenceImage: {
       name: file.name,
       type: file.type || "image/png",
-      dataUrl: await readFileAsDataUrl(file),
+      dataUrl,
     },
     file,
   };
@@ -306,7 +330,7 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage
       taskId: task.id,
       status: "success",
       b64_json: first.b64_json,
-      url: first.url,
+      url: typeof first.url === "string" ? normalizeImageAssetUrl(first.url.replace(/^http:/i, "https:")) : first.url,
       revised_prompt: first.revised_prompt,
       error: undefined,
       progressMessage: undefined,

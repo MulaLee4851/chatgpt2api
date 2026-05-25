@@ -26,11 +26,31 @@ type ImageResultsProps = {
   formatConversationTime: (value: string) => string;
 };
 
+function normalizeImageAssetUrl(url: string) {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.startsWith("data:")) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed, typeof window !== "undefined" ? window.location.origin : "https://leeschathome.eu.cc");
+    if (["/images/", "/template-images/"].some((prefix) => parsed.pathname.startsWith(prefix))) {
+      const origin = typeof window !== "undefined" ? window.location.origin : parsed.origin;
+      return `${origin}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
 function getStoredImageSrc(image: StoredImage) {
   if (image.b64_json) {
     return `data:image/png;base64,${image.b64_json}`;
   }
-  return image.url || "";
+  return image.url ? normalizeImageAssetUrl(image.url) : "";
 }
 
 async function downloadStoredImage(image: StoredImage, index: number) {
@@ -41,8 +61,14 @@ async function downloadStoredImage(image: StoredImage, index: number) {
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     blob = new Blob([bytes], { type: "image/png" });
   } else if (image.url) {
-    const res = await fetch(image.url);
+    const res = await fetch(normalizeImageAssetUrl(image.url));
+    if (!res.ok) {
+      throw new Error("下载图片失败");
+    }
     blob = await res.blob();
+    if (!blob.size) {
+      throw new Error("下载图片失败：图片内容为空");
+    }
   } else {
     return;
   }
