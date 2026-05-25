@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from io import BytesIO
+import zipfile
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Header, HTTPException
+from fastapi.responses import Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, model_validator
 
@@ -134,6 +138,42 @@ def _resolve_batch_key_name(base_name: str, index: int, count: int) -> str:
     if count <= 1 or not base_name:
         return base_name
     return f"{base_name} #{index + 1}"
+
+
+def _unique_tokens(tokens: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for token in tokens:
+        value = str(token or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _account_payload_token(item: dict[str, Any]) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("access_token", "token"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _download_timestamp() -> str:
+    return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime("%Y%m%d-%H%M%S")
+
+
+def _account_zip_bytes(items: list[dict[str, str]]) -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for index, item in enumerate(items, start=1):
+            name = str(item.get("email") or item.get("id") or f"account-{index}").strip() or f"account-{index}"
+            safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in name)
+            zf.writestr(f"{index:02d}-{safe_name}.json", json.dumps(item, ensure_ascii=False, indent=2) + "\n")
+    return buffer.getvalue()
 
 
 def create_router() -> APIRouter:

@@ -1,7 +1,7 @@
 {
-  "auth-key": "chatgpt2api",
+  "auth-key": "Lideliang2002.",
   "refresh_account_interval_minute": 60,
-  "image_retention_days": 15,
+  "image_retention_days": 99,
   "image_poll_timeout_secs": 120,
   "auto_remove_rate_limited_accounts": false,
   "auto_remove_invalid_accounts": true,
@@ -12,7 +12,7 @@
     "warning"
   ],
   "proxy": "",
-  "base_url": "",
+  "base_url": "https://leesapihome.ccwu.cc",
   "sensitive_words": [],
   "global_system_prompt": "",
   "ai_review": {
@@ -46,5 +46,10 @@
       "images": false
     }
   },
-  "image_account_concurrency": 3
+  "image_account_concurrency": 3,
+  "scheduled_account_refresh": {
+    "enabled": true,
+    "interval_minutes": 10,
+    "worker_count": 2
+  }
 }

@@ -95,6 +95,19 @@ def _normalize_backup_state(value: object) -> dict[str, object]:
     }
 
 
+def _normalize_image_storage_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), DEFAULT_IMAGE_STORAGE["enabled"]),
+        "mode": str(source.get("mode") or DEFAULT_IMAGE_STORAGE["mode"]).strip() or DEFAULT_IMAGE_STORAGE["mode"],
+        "webdav_url": str(source.get("webdav_url") or DEFAULT_IMAGE_STORAGE["webdav_url"]).strip(),
+        "webdav_username": str(source.get("webdav_username") or DEFAULT_IMAGE_STORAGE["webdav_username"]).strip(),
+        "webdav_password": str(source.get("webdav_password") or DEFAULT_IMAGE_STORAGE["webdav_password"]).strip(),
+        "webdav_root_path": str(source.get("webdav_root_path") or DEFAULT_IMAGE_STORAGE["webdav_root_path"]).strip().strip("/") or DEFAULT_IMAGE_STORAGE["webdav_root_path"],
+        "public_base_url": str(source.get("public_base_url") or DEFAULT_IMAGE_STORAGE["public_base_url"]).strip().rstrip("/"),
+    }
+
+
 def _normalize_scheduled_account_refresh_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
     return {
@@ -328,6 +341,7 @@ class ConfigStore:
         data["sensitive_words"] = self.sensitive_words
         data["ai_review"] = self.ai_review
         data["global_system_prompt"] = self.global_system_prompt
+        data["image_storage"] = self.get_image_storage_settings()
         data["backup"] = self.get_backup_settings()
         data["scheduled_account_refresh"] = self.get_scheduled_account_refresh_settings()
         data.pop("auth-key", None)
@@ -341,6 +355,8 @@ class ConfigStore:
         next_data.update(dict(data or {}))
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
+        if "image_storage" in next_data:
+            next_data["image_storage"] = _normalize_image_storage_settings(next_data.get("image_storage"))
         if "scheduled_account_refresh" in next_data:
             next_data["scheduled_account_refresh"] = _normalize_scheduled_account_refresh_settings(
                 next_data.get("scheduled_account_refresh"),
@@ -355,6 +371,9 @@ class ConfigStore:
 
     def get_scheduled_account_refresh_settings(self) -> dict[str, object]:
         return _normalize_scheduled_account_refresh_settings(self.data.get("scheduled_account_refresh"))
+
+    def get_image_storage_settings(self) -> dict[str, object]:
+        return _normalize_image_storage_settings(self.data.get("image_storage"))
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""
