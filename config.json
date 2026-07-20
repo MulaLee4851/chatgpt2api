@@ -12,8 +12,10 @@
     "warning"
   ],
   "proxy": "",
-  "base_url": "",
-  "sensitive_words": [],
+  "base_url": "https://leesapihome.ccwu.cc",
+  "sensitive_words": [
+    "暧昧"
+  ],
   "global_system_prompt": "",
   "ai_review": {
     "enabled": false,

@@ -6,6 +6,7 @@ from threading import Event
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from api import accounts, ai, image_tasks, image_templates, register, system
 from api.support import resolve_web_asset, start_limited_account_watcher

@@ -62,6 +62,20 @@ def _collect_image_urls(data: list[Any]) -> list[str]:
     return urls
 
 
+def _strip_inline_image_payloads(data: object) -> object:
+    if not isinstance(data, list):
+        return data
+    cleaned: list[Any] = []
+    for item in data:
+        if not isinstance(item, dict):
+            cleaned.append(item)
+            continue
+        copied = dict(item)
+        copied.pop("b64_json", None)
+        cleaned.append(copied)
+    return cleaned
+
+
 def _consume_identity_images(identity: dict[str, object], image_count: int) -> dict[str, object]:
     if identity.get("role") == "admin":
         return identity
@@ -86,7 +100,7 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         "updated_at": task.get("updated_at"),
     }
     if task.get("data") is not None:
-        item["data"] = task.get("data")
+        item["data"] = _strip_inline_image_payloads(task.get("data"))
     if task.get("error"):
         item["error"] = task.get("error")
     if task.get("progress_message"):
@@ -306,6 +320,28 @@ class ImageTaskService:
             data = result.get("data")
             if not isinstance(data, list) or not data:
                 message = _clean(result.get("message"))
+                if mode == "edit":
+                    terminal_message = message or "未返回可用编辑结果，可能为原图回退或无有效编辑产物"
+                    self._update_task(
+                        key,
+                        status=TASK_STATUS_SUCCESS,
+                        data=[],
+                        error="",
+                        progress_message=terminal_message,
+                    )
+                    _log_image_task_stage(
+                        "编辑图片任务无结果但不记为失败",
+                        {
+                            "reason": "task_result_empty_edit_treated_success",
+                            "task_key": key,
+                            "mode": mode,
+                            "model": model,
+                            "request_preview": request_preview,
+                            "result_keys": sorted(result.keys()),
+                            "message": terminal_message,
+                        },
+                    )
+                    return
                 if not message:
                     _log_image_task_stage(
                         "图片任务未拿到图片或说明文本",
@@ -316,14 +352,20 @@ class ImageTaskService:
                             "model": model,
                             "request_preview": request_preview,
                             "result_keys": sorted(result.keys()),
-                            "has_data": isinstance(data, list) and bool(data),
+                            "has_data": False,
                             "has_message": False,
                         },
                     )
                     message = "image task returned no image data"
                 raise RuntimeError(message)
             _consume_identity_images(identity, len(data))
-            self._update_task(key, status=TASK_STATUS_SUCCESS, data=data, error="", progress_message="")
+            self._update_task(
+                key,
+                status=TASK_STATUS_SUCCESS,
+                data=_strip_inline_image_payloads(data),
+                error="",
+                progress_message="",
+            )
             _log_image_task_stage(
                 "图片任务处理成功",
                 {
@@ -451,7 +493,7 @@ class ImageTaskService:
             }
             data = item.get("data")
             if isinstance(data, list):
-                task["data"] = data
+                task["data"] = _strip_inline_image_payloads(data)
             error = _clean(item.get("error"))
             if error:
                 task["error"] = error
@@ -463,8 +505,14 @@ class ImageTaskService:
 
     def _save_locked(self) -> None:
         items = sorted(self._tasks.values(), key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        safe_items = []
+        for item in items:
+            copied = dict(item)
+            if copied.get("data") is not None:
+                copied["data"] = _strip_inline_image_payloads(copied.get("data"))
+            safe_items.append(copied)
         tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps({"tasks": items}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path.write_text(json.dumps({"tasks": safe_items}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         tmp_path.replace(self.path)
 
     def _recover_unfinished_locked(self) -> bool:

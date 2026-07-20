@@ -6,6 +6,8 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Uploa
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.image_inputs import parse_image_edit_request
+
 from api.support import (
     consume_identity_images,
     consume_identity_tokens,

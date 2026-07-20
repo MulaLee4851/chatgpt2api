@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import time
@@ -148,6 +149,15 @@ IMAGE_ONLY_INSTRUCTION_ZH = "生成以下照片。直接生成最终图片结果
 IMAGE_ONLY_RETRY_INSTRUCTION_ZH = "生成以下照片。这是图片生成请求。请直接输出最终图片，不要追问，不要解释，不要返回文字说明。"
 IMAGE_ONLY_INSTRUCTION_EN = "Generate the following image. Output the final image only. Do not ask questions, return explanatory text, or request additional information."
 IMAGE_ONLY_RETRY_INSTRUCTION_EN = "Generate the following image. This is an image-generation request. Output the final image only. Do not ask follow-up questions, explain, or return text instead of an image."
+IMAGE_SHORT_PROMPT_THRESHOLD = 18
+IMAGE_EDIT_KEYWORDS = (
+    "保持", "保留", "改", "修改", "优化", "换", "去掉", "增加", "减少", "更", "一点",
+    "realistic", "natural", "edit", "keep", "change", "replace", "remove", "make"
+)
+IMAGE_REALISM_HINTS = (
+    "像p", "像p的", "太假", "假", "不真实", "不自然", "塑料", "磨皮", "修图", "网红", "滤镜", "ai味",
+    "realistic", "natural", "fake", "retouched", "plastic", "beauty filter", "ai-looking"
+)
 
 
 def detect_prompt_language(prompt: str) -> str:
@@ -156,10 +166,89 @@ def detect_prompt_language(prompt: str) -> str:
     return "zh" if cjk_count >= max(1, latin_count // 2) else "en"
 
 
+def _compact_prompt(prompt: str) -> str:
+    return re.sub(r"\s+", " ", str(prompt or "")).strip()
+
+
+def _is_short_image_prompt(prompt: str) -> bool:
+    compact = _compact_prompt(prompt)
+    if not compact:
+        return False
+    return len(compact) <= IMAGE_SHORT_PROMPT_THRESHOLD or len(compact.split(" ")) <= 6
+
+
+def _looks_like_edit_instruction(prompt: str) -> bool:
+    compact = _compact_prompt(prompt).lower()
+    if not compact:
+        return False
+    return any(token in compact for token in IMAGE_EDIT_KEYWORDS)
+
+
+def _looks_like_realism_request(prompt: str) -> bool:
+    compact = _compact_prompt(prompt).lower()
+    if not compact:
+        return False
+    return any(token in compact for token in IMAGE_REALISM_HINTS)
+
+
+def _enhance_short_image_prompt(prompt: str, language: str) -> str:
+    base_prompt = _compact_prompt(prompt)
+    if not base_prompt:
+        return base_prompt
+    is_edit = _looks_like_edit_instruction(base_prompt)
+    realism = _looks_like_realism_request(base_prompt)
+    if language == "zh":
+        if is_edit:
+            goal = f"用户编辑目标：{base_prompt}。"
+            if realism:
+                goal = f"用户编辑目标：{base_prompt}。重点降低修图感和假脸感，让画面更像真实拍摄的自然照片。"
+            return "\n\n".join([
+                "你正在编辑一张已有图片，而不是从零开始重新想象场景。",
+                goal,
+                "编辑要求：尽量保留原图中的主体身份、人数、姿势、服装、构图、镜头视角和场景主体，除非用户明确要求改变。",
+                "质量目标：画面真实自然，光影可信，肤质和纹理自然，五官正常，解剖合理，细节连贯。",
+                "避免：不要返回解释文字，不要复述提示词，不要追问；避免过度磨皮、塑料感、网红滤镜感、明显 AI 痕迹、畸形手脸。",
+                f"请严格围绕这个目标执行编辑并直接输出最终图片：{base_prompt}",
+            ])
+        goal = f"生成目标：{base_prompt}。"
+        if realism:
+            goal = f"生成目标：{base_prompt}。请优先输出真实自然、像照片一样可信的画面。"
+        return "\n\n".join([
+            goal,
+            "请把用户的简短需求补全为清晰、可执行、强目的性的图片生成目标，重点明确主体、场景、构图、光线、质感与真实感。",
+            "质量目标：画面真实自然，光影和阴影可信，纹理细节合理，人物和物体结构正常，整体像真实拍摄或高质量真实视觉作品。",
+            "避免：不要返回解释文字，不要只改写提示词，不要请求补充信息，不要输出中间过程。",
+            f"请根据这个目标直接生成最终图片：{base_prompt}",
+        ])
+    if is_edit:
+        goal = f"User edit goal: {base_prompt}."
+        if realism:
+            goal = f"User edit goal: {base_prompt}. Prioritize reducing the over-retouched or artificial look and make the result feel like a realistic natural photograph."
+        return "\n\n".join([
+            "You are editing an existing image, not creating a new unrelated scene from scratch.",
+            goal,
+            "Editing constraints: preserve the main subject identity, number of subjects, pose, clothing, framing, camera angle, and core scene unless the user explicitly asks to change them.",
+            "Quality target: realistic photographic result, believable lighting and shadows, natural skin texture, coherent facial details, correct anatomy, and consistent image details.",
+            "Avoid: explanatory text, prompt rewriting without image output, follow-up questions, over-smoothing, plastic skin, influencer-style beauty filters, obvious AI artifacts, or distorted hands and faces.",
+            f"Apply only the requested edit and output the final edited image only: {base_prompt}",
+        ])
+    goal = f"Generation goal: {base_prompt}."
+    if realism:
+        goal = f"Generation goal: {base_prompt}. Prioritize a realistic, natural, photo-like result."
+    return "\n\n".join([
+        goal,
+        "Expand the user's brief request into a clear, executable, strongly goal-oriented image generation target with explicit subject, scene, composition, lighting, texture, and realism cues.",
+        "Quality target: realistic lighting, natural shadows, believable textures, coherent anatomy, and visually authentic details.",
+        "Avoid: explanatory text, asking for clarification, or returning only a rewritten prompt instead of an image.",
+        f"Use this goal to directly generate the final image only: {base_prompt}",
+    ])
+
+
 def build_image_prompt(prompt: str, size: str | None, strict_image_only: bool = False) -> str:
-    base_prompt = prompt.strip()
+    base_prompt = _compact_prompt(prompt)
     language = detect_prompt_language(base_prompt)
-    parts = [base_prompt] if base_prompt else []
+    enhanced_prompt = _enhance_short_image_prompt(base_prompt, language) if _is_short_image_prompt(base_prompt) else base_prompt
+    parts = [enhanced_prompt] if enhanced_prompt else []
     if size:
         if size not in {"1:1", "16:9", "9:16", "4:3", "3:4"}:
             parts.append(
@@ -185,7 +274,7 @@ def build_image_prompt(prompt: str, size: str | None, strict_image_only: bool = 
     parts.append(
         (IMAGE_ONLY_RETRY_INSTRUCTION_ZH if strict_image_only else IMAGE_ONLY_INSTRUCTION_ZH)
         if language == "zh"
-        else (IMAGE_ONLY_RETRY_INSTRUCTION_EN if strict_image_only else IMAGE_ONLY_INSTRUCTION_EN)
+        else (IMAGE_ONLY_RETRY_INSTRUCTION_EN if strict_image_only else IMAGE_ONLY_RETRY_INSTRUCTION_EN)
     )
     return "\n\n".join(part for part in parts if part)
 
